@@ -55,6 +55,19 @@
   </section>
 
   <section>
+    <h2>Full-text search</h2>
+    <div class="row">
+      <input id="fulltext-q" placeholder="phrase to search extracted text for..." size="40"
+             onkeydown="if(event.key==='Enter') runFulltextSearch()">
+      <button onclick="runFulltextSearch()">Search text</button>
+    </div>
+    <table>
+      <thead><tr><th>arXiv id</th><th>Page</th><th>Title</th><th>Snippet</th></tr></thead>
+      <tbody id="fulltext-body"></tbody>
+    </table>
+  </section>
+
+  <section>
     <h2>Run pipeline stages</h2>
     <div class="row">
       <input id="fetch-query" placeholder="fetch query" size="24">
@@ -76,6 +89,10 @@
         <option value="csv">csv</option>
       </select>
       <button onclick="runExport()">Export</button>
+    </div>
+    <div class="row">
+      <button onclick="runReconcile(false)">Reconcile (dry-run)</button>
+      <button onclick="runReconcile(true)">Reconcile --fix</button>
     </div>
     <div id="job-status" class="muted"></div>
     <pre class="log" id="job-log"></pre>
@@ -200,6 +217,26 @@ async function runExport() {
   const format = document.getElementById('export-format').value;
   const job = await api('/api/actions/export', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({format}) });
   watchJob(job);
+}
+
+async function runReconcile(fix) {
+  if (fix && !confirm('Reconcile --fix will re-download stale/missing PDFs. Continue?')) return;
+  const job = await api('/api/actions/reconcile', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({fix}) });
+  watchJob(job);
+}
+
+async function runFulltextSearch() {
+  const q = document.getElementById('fulltext-q').value.trim();
+  const body = document.getElementById('fulltext-body');
+  if (!q) { body.innerHTML = ''; return; }
+  const data = await api('/api/search/fulltext?q=' + encodeURIComponent(q));
+  body.innerHTML = data.hits.map(h => `
+    <tr>
+      <td>${h.arxiv_id}</td>
+      <td>${h.page}</td>
+      <td>${escapeHtml(h.title)}</td>
+      <td>${escapeHtml(h.snippet)}</td>
+    </tr>`).join('') || '<tr><td colspan="4" class="muted">no hits</td></tr>';
 }
 
 loadStats();

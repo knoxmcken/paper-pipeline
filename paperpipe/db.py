@@ -48,6 +48,10 @@ CREATE TABLE IF NOT EXISTS runs (
 
 CREATE INDEX IF NOT EXISTS idx_papers_primary_category ON papers(primary_category);
 CREATE INDEX IF NOT EXISTS idx_papers_published ON papers(published);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS papers_fts USING fts5(
+    arxiv_id UNINDEXED, page UNINDEXED, content
+);
 """
 
 JSON_FIELDS = ("authors", "categories", "headings")
@@ -153,6 +157,11 @@ def update_pdf(conn: sqlite3.Connection, arxiv_id: str, info: Dict[str, object])
     conn.commit()
 
 
+def update_pdf_url(conn: sqlite3.Connection, arxiv_id: str, url: str) -> None:
+    conn.execute("UPDATE papers SET pdf_url=? WHERE arxiv_id=?", (url, arxiv_id))
+    conn.commit()
+
+
 def update_extraction(conn: sqlite3.Connection, arxiv_id: str, info: Dict[str, object],
                       extracted_at: str) -> None:
     conn.execute(
@@ -198,6 +207,58 @@ def search(conn: sqlite3.Connection, term: str, limit: int = 25) -> List[Dict[st
         (like, like, like, like, limit),
     )
     return [_decode(r) for r in rows]
+
+
+def index_fulltext(conn: sqlite3.Connection, arxiv_id: str, text_path: str) -> int:
+    """(Re)populate ``papers_fts`` for one paper, one row per non-blank page."""
+    conn.execute("DELETE FROM papers_fts WHERE arxiv_id=?", (arxiv_id,))
+    text = Path(text_path).read_text(encoding="utf-8", errors="replace")
+    rows = [
+        (arxiv_id, page_num, page_text.strip())
+        for page_num, page_text in enumerate(text.split("\f"), start=1)
+        if page_text.strip()
+    ]
+    conn.executemany(
+        "INSERT INTO papers_fts (arxiv_id, page, content) VALUES (?, ?, ?)", rows
+    )
+    conn.commit()
+    return len(rows)
+
+
+def backfill_fts(conn: sqlite3.Connection) -> int:
+    """Index any paper with extracted text that isn't in ``papers_fts`` yet.
+
+    Lets ``--fulltext`` work against a database created before FTS existed,
+    and against text extracted before FTS existed, without a separate
+    migration step.
+    """
+    rows = conn.execute(
+        """SELECT arxiv_id, text_path FROM papers
+           WHERE text_path IS NOT NULL
+             AND arxiv_id NOT IN (SELECT DISTINCT arxiv_id FROM papers_fts)"""
+    ).fetchall()
+    indexed = 0
+    for row in rows:
+        path = row["text_path"]
+        if path and Path(path).exists():
+            index_fulltext(conn, row["arxiv_id"], path)
+            indexed += 1
+    return indexed
+
+
+def search_fulltext(conn: sqlite3.Connection, phrase: str, limit: int = 20) -> List[Dict[str, object]]:
+    """Ranked phrase search over extracted text, with a snippet per hit."""
+    query = '"' + phrase.replace('"', '""') + '"'
+    rows = conn.execute(
+        """SELECT f.arxiv_id, f.page, p.title,
+                  snippet(papers_fts, 2, '[', ']', ' ... ', 12) AS snippet,
+                  bm25(papers_fts) AS rank
+           FROM papers_fts f JOIN papers p ON p.arxiv_id = f.arxiv_id
+           WHERE papers_fts MATCH ?
+           ORDER BY rank LIMIT ?""",
+        (query, limit),
+    )
+    return [dict(r) for r in rows]
 
 
 def stats(conn: sqlite3.Connection) -> Dict[str, int]:

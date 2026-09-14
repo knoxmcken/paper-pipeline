@@ -11,7 +11,7 @@ from typing import Dict, List
 
 import requests
 
-from . import __version__, arxiv, config, db, export, extract, fetch, index, openalex
+from . import __version__, arxiv, config, db, export, extract, fetch, index, openalex, reconcile
 
 STAGES = ("fetch", "download", "extract", "index", "export")
 
@@ -217,6 +217,7 @@ def cmd_extract(args) -> int:
         try:
             info = extract.extract(Path(pdf), paths["text"], backend=backend)
             db.update_extraction(conn, row["arxiv_id"], info, _now())
+            db.index_fulltext(conn, row["arxiv_id"], info["text_path"])
             done += 1
             print(f"  text {row['arxiv_id']}  {info['page_count']}p  {info['text_chars']:,} chars")
         except extract.ExtractError as exc:
@@ -311,12 +312,53 @@ def cmd_serve(args) -> int:
 def cmd_show(args) -> int:
     conn, _ = _open(args)
     term = args.term
+    if args.fulltext:
+        if not term:
+            print("--fulltext needs a search phrase", file=sys.stderr)
+            conn.close()
+            return 2
+        db.backfill_fts(conn)
+        hits = db.search_fulltext(conn, term, limit=args.limit)
+        for hit in hits:
+            print(f"{hit['arxiv_id']:<16} p{hit['page']:<4} {hit['title'][:60]}")
+            print(f"{'':<22} {hit['snippet']}")
+        print(f"\n{len(hits)} hit(s)")
+        conn.close()
+        return 0
     rows = db.search(conn, term, limit=args.limit) if term else db.list_papers(conn, limit=args.limit)
     for row in rows:
         print(f"{row['arxiv_id']:<16} {(row.get('published') or '')[:10]}  {row['title'][:80]}")
     print(f"\n{len(rows)} paper(s)")
     conn.close()
     return 0
+
+
+def cmd_reconcile(args) -> int:
+    conn, paths = _open(args)
+    session = _session()
+    report = reconcile.reconcile(conn, paths["pdfs"], session=session, fix=args.fix, delay=args.delay)
+
+    labels = (
+        ("missing_file", "missing PDF file on disk"),
+        ("dead_link", "dead or non-PDF link"),
+        ("key_collision", "key collision (same DOI, different keys)"),
+    )
+    for key, label in labels:
+        items = report[key]
+        print(f"{label}: {len(items)}")
+        for item in items:
+            print(f"  {item}")
+
+    if args.fix:
+        print(f"fixed: {len(report['fixed'])}")
+        for item in report["fixed"]:
+            print(f"  {item['arxiv_id']} ({', '.join(item['kinds'])}) -> {item['url']}")
+        print(f"unresolved: {len(report['unresolved'])}")
+        for item in report["unresolved"]:
+            print(f"  {item}")
+
+    conn.close()
+    return 0 if not args.fix or not report["unresolved"] else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -403,7 +445,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_show = sub.add_parser("show", parents=[common], help="list or search stored papers")
     p_show.add_argument("term", nargs="?", default=None)
     p_show.add_argument("--limit", type=int, default=25)
+    p_show.add_argument("--fulltext", action="store_true",
+                        help="phrase search over extracted text instead of metadata")
     p_show.set_defaults(func=cmd_show, id=None, query=None)
+
+    p_reconcile = sub.add_parser(
+        "reconcile", parents=[common],
+        help="report (and optionally repair) drift between stored papers and their sources",
+    )
+    p_reconcile.add_argument("--fix", action="store_true",
+                             help="repair stale links and missing files (dry-run by default)")
+    p_reconcile.add_argument("--delay", type=float, default=config.DEFAULT_DELAY)
+    p_reconcile.set_defaults(func=cmd_reconcile, id=None)
     return parser
 
 

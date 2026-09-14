@@ -55,6 +55,58 @@ def test_get_missing_paper_is_404(client):
     assert resp.status_code == 404
 
 
+def test_fulltext_search_backfills_and_returns_hits(client, tmp_path):
+    text_path = tmp_path / "text" / "2401.00002.txt"
+    text_path.parent.mkdir(parents=True, exist_ok=True)
+    text_path.write_text("intro\fdiscusses prompt injection against agents", encoding="utf-8")
+    conn = db.connect(config.db_path(tmp_path))
+    db.update_extraction(
+        conn, "2401.00002",
+        {"text_path": str(text_path), "text_chars": 40, "page_count": 2, "headings": []},
+        "2024-01-01T00:00:00Z",
+    )
+    conn.close()
+
+    resp = client.get("/api/search/fulltext", params={"q": "prompt injection"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["count"] == 1
+    assert body["hits"][0]["arxiv_id"] == "2401.00002"
+    assert body["hits"][0]["page"] == 2
+
+
+def test_fulltext_search_requires_query_param(client):
+    resp = client.get("/api/search/fulltext")
+    assert resp.status_code == 422
+
+
+def test_reconcile_action_runs_to_completion(tmp_path):
+    # A dedicated app/corpus with no pdf_url on the paper: reconcile's dead-link
+    # check has nothing to call out to, so this stays offline like the rest of the
+    # suite. paperpipe/reconcile.py has full offline network-check coverage with a
+    # fake session; this just checks the web action wires the CLI correctly.
+    conn = db.connect(config.db_path(tmp_path))
+    db.init_db(conn)
+    db.upsert_papers(conn, [make_paper(pdf_url=None)])
+    conn.close()
+    client = fastapi_testclient.TestClient(create_app(tmp_path))
+
+    resp = client.post("/api/actions/reconcile", json={"fix": False})
+    assert resp.status_code == 200
+    job = resp.json()
+
+    import time
+
+    for _ in range(50):
+        job = client.get(f"/api/jobs/{job['id']}").json()
+        if job["status"] in ("done", "error"):
+            break
+        time.sleep(0.1)
+
+    assert job["status"] == "done", job["output"]
+    assert job["returncode"] == 0
+
+
 def test_index_action_runs_to_completion(client):
     resp = client.post("/api/actions/index")
     assert resp.status_code == 200

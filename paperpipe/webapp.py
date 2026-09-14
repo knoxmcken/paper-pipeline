@@ -39,6 +39,10 @@ class ExportRequest(BaseModel):
     format: str = "all"
 
 
+class ReconcileRequest(BaseModel):
+    fix: bool = False
+
+
 class Job:
     def __init__(self, job_id: str, kind: str, argv: List[str]):
         self.id = job_id
@@ -139,6 +143,16 @@ def create_app(data_dir: Path) -> FastAPI:
         finally:
             conn.close()
 
+    @app.get("/api/search/fulltext")
+    def get_fulltext(q: str, limit: int = 20):
+        conn = _conn()
+        try:
+            db.backfill_fts(conn)
+            hits = db.search_fulltext(conn, q, limit=limit)
+            return {"count": len(hits), "hits": hits}
+        finally:
+            conn.close()
+
     @app.get("/api/papers/{arxiv_id}")
     def get_paper(arxiv_id: str):
         conn = _conn()
@@ -181,6 +195,11 @@ def create_app(data_dir: Path) -> FastAPI:
     @app.post("/api/actions/export")
     def action_export(req: ExportRequest):
         return runner.submit("export", ["export", "--format", req.format]).to_dict()
+
+    @app.post("/api/actions/reconcile")
+    def action_reconcile(req: ReconcileRequest):
+        argv = ["reconcile"] + (["--fix"] if req.fix else [])
+        return runner.submit("reconcile", argv).to_dict()
 
     @app.get("/api/jobs")
     def list_jobs():

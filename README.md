@@ -47,7 +47,12 @@ paperpipe export --format all                           # data/exports/papers.{m
 # inspect
 paperpipe stats
 paperpipe show "attention"
+paperpipe show --fulltext "prompt injection"            # ranked phrase search over extracted text, with a snippet + page
 paperpipe index --check                                 # is index.json in sync with the DB?
+
+# repair drift between the stored corpus and its sources
+paperpipe reconcile                                     # dry run: lists dead/paywalled links, missing files, key collisions
+paperpipe reconcile --fix                                # re-resolves stale links (preferring the arXiv copy) and re-downloads
 ```
 
 ## Web UI
@@ -57,10 +62,11 @@ pip install -e ".[web]"
 paperpipe serve                # http://127.0.0.1:8000
 ```
 
-Browse and search the stored corpus, view a paper's abstract/headings/artifact status,
-and trigger `fetch` / `extract` / `index` / `export` as background jobs with live log
-output. Each action shells out to the same `paperpipe` CLI commands, so behaviour never
-drifts from the command line; `--data-dir`/`PAPERPIPE_DATA` apply the same way.
+Browse and search the stored corpus, run a ranked full-text phrase search over extracted
+text, view a paper's abstract/headings/artifact status, and trigger `fetch` / `extract` /
+`index` / `export` / `reconcile` as background jobs with live log output. Each action
+shells out to the same `paperpipe` CLI commands, so behaviour never drifts from the
+command line; `--data-dir`/`PAPERPIPE_DATA` apply the same way.
 
 Data layout (git-ignored):
 
@@ -166,7 +172,6 @@ are absent.
 
 ## Roadmap
 
-- SQLite FTS5 over extracted text (currently `LIKE` on title/abstract/authors)
 - DOI/Crossref and Semantic Scholar enrichment for published versions
 - Full TOC from the PDF outline (`mutool show outline`) where one exists
 - Optional embeddings + duplicate detection
