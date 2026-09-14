@@ -1,0 +1,19 @@
+# data (generated)
+data/
+*.pdf
+*.part
+
+# python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# editors / os
+.DS_Store
+.vscode/
+.idea/
