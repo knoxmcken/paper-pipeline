@@ -12,6 +12,10 @@ DEFAULT_DATA_DIR = Path(os.environ.get("PAPERPIPE_DATA", "data"))
 
 ARXIV_API = os.environ.get("PAPERPIPE_ARXIV_API", "https://export.arxiv.org/api/query")
 ARXIV_RSS = os.environ.get("PAPERPIPE_ARXIV_RSS", "https://rss.arxiv.org/rss/{category}")
+OPENALEX_API = os.environ.get("PAPERPIPE_OPENALEX_API", "https://api.openalex.org/works")
+
+# OpenAlex asks for a contact address so it can put you in the polite pool.
+MAILTO = os.environ.get("PAPERPIPE_MAILTO", "knoxmcken@gmail.com")
 ARXIV_PDF = "https://arxiv.org/pdf/{arxiv_id}"
 ARXIV_ABS = "https://arxiv.org/abs/{arxiv_id}"
 

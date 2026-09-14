@@ -31,6 +31,8 @@ def build(conn, path: Path, limit: int = None) -> Dict[str, object]:
                 "text_path": p.get("text_path"),
                 "page_count": p.get("page_count"),
                 "headings": p.get("headings") or [],
+                "source": p.get("source"),
+                "doi": p.get("doi"),
             }
         )
     payload = {

@@ -30,6 +30,8 @@ CREATE TABLE IF NOT EXISTS papers (
     text_chars       INTEGER,
     page_count       INTEGER,
     headings         TEXT,
+    source           TEXT,
+    cited_by         INTEGER,
     fetched_at       TEXT,
     extracted_at     TEXT
 );
@@ -55,26 +57,26 @@ INSERT INTO papers (
     arxiv_id, version, title, abstract, authors, primary_category, categories,
     published, updated, doi, journal_ref, comment, abs_url, pdf_url,
     pdf_path, pdf_sha256, pdf_bytes, text_path, text_chars, page_count,
-    headings, fetched_at, extracted_at
+    headings, source, cited_by, fetched_at, extracted_at
 ) VALUES (
     :arxiv_id, :version, :title, :abstract, :authors, :primary_category, :categories,
     :published, :updated, :doi, :journal_ref, :comment, :abs_url, :pdf_url,
     :pdf_path, :pdf_sha256, :pdf_bytes, :text_path, :text_chars, :page_count,
-    :headings, :fetched_at, :extracted_at
+    :headings, :source, :cited_by, :fetched_at, :extracted_at
 )
 ON CONFLICT(arxiv_id) DO UPDATE SET
-    version          = excluded.version,
+    version          = COALESCE(excluded.version, papers.version),
     title            = excluded.title,
-    abstract         = excluded.abstract,
-    authors          = excluded.authors,
-    primary_category = excluded.primary_category,
-    categories       = excluded.categories,
-    published        = excluded.published,
-    updated          = excluded.updated,
-    doi              = excluded.doi,
-    journal_ref      = excluded.journal_ref,
-    comment          = excluded.comment,
-    abs_url          = excluded.abs_url,
+    abstract         = COALESCE(excluded.abstract, papers.abstract),
+    authors          = COALESCE(excluded.authors, papers.authors),
+    primary_category = COALESCE(excluded.primary_category, papers.primary_category),
+    categories       = COALESCE(excluded.categories, papers.categories),
+    published        = COALESCE(excluded.published, papers.published),
+    updated          = COALESCE(excluded.updated, papers.updated),
+    doi              = COALESCE(excluded.doi, papers.doi),
+    journal_ref      = COALESCE(excluded.journal_ref, papers.journal_ref),
+    comment          = COALESCE(excluded.comment, papers.comment),
+    abs_url          = COALESCE(excluded.abs_url, papers.abs_url),
     pdf_url          = COALESCE(excluded.pdf_url, papers.pdf_url),
     pdf_path         = COALESCE(excluded.pdf_path, papers.pdf_path),
     pdf_sha256       = COALESCE(excluded.pdf_sha256, papers.pdf_sha256),
@@ -83,9 +85,14 @@ ON CONFLICT(arxiv_id) DO UPDATE SET
     text_chars       = COALESCE(excluded.text_chars, papers.text_chars),
     page_count       = COALESCE(excluded.page_count, papers.page_count),
     headings         = COALESCE(excluded.headings, papers.headings),
-    fetched_at       = COALESCE(excluded.fetched_at, papers.fetched_at),
+    source           = COALESCE(papers.source, excluded.source),
+    cited_by         = COALESCE(excluded.cited_by, papers.cited_by),
+    fetched_at       = COALESCE(papers.fetched_at, excluded.fetched_at),
     extracted_at     = COALESCE(excluded.extracted_at, papers.extracted_at)
 """
+
+# Columns added after the first release; merged into existing databases on open.
+MIGRATIONS = (("source", "TEXT"), ("cited_by", "INTEGER"))
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -98,6 +105,10 @@ def connect(path: Path) -> sqlite3.Connection:
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(papers)")}
+    for column, ddl in MIGRATIONS:
+        if column not in existing:
+            conn.execute(f"ALTER TABLE papers ADD COLUMN {column} {ddl}")
     conn.commit()
 
 

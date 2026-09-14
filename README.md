@@ -34,6 +34,9 @@ paperpipe run -q "retrieval augmented generation" -n 25 --category cs.CL
 # when the search API is rate-limiting you, harvest the newest announcements instead
 paperpipe run -q "retrieval" --source rss --category cs.CL,cs.LG -n 10
 
+# or search across publishers with open-access PDF links
+paperpipe run -q "LLM agents in cybersecurity" --source openalex -n 30
+
 # step by step
 paperpipe search -q "graph neural networks" -n 10     # query only, stores nothing
 paperpipe fetch  -q "graph neural networks" -n 10     # metadata + PDFs into data/
@@ -77,17 +80,23 @@ Point it elsewhere with `--data-dir` or `PAPERPIPE_DATA`.
 
 ## Discovery sources
 
-Two, selected with `--source`:
+Three, selected with `--source`:
 
 | Source | Endpoint | Semantics |
 |---|---|---|
 | `api` (default) | `export.arxiv.org/api/query` | real search: relevance/date ranking, huge recall, field queries |
 | `rss` | `rss.arxiv.org/rss/<category>` | newest announcement batch per category; `-q` filters client-side |
+| `openalex` | `api.openalex.org/works` | topical scholarly search across all publishers, with open-access PDF links |
 
-`--source rss` is the fallback for when the search API answers `429 Rate exceeded.`
-(arXiv throttles per IP, and shared/cloud egress addresses get hit hard). PDF
-fetches come from `arxiv.org/pdf/...`, a different service that keeps working
-while the API is throttled, so an already-known paper list still downloads fine.
+Fallbacks exist because arXiv throttles by IP, and shared/cloud egress addresses get hit
+hard (`429 Rate exceeded.`, and sometimes read timeouts). PDF fetches come from
+`arxiv.org/pdf/...`, a different service that keeps working while the API is throttled, so
+an already-known paper list still downloads fine. `openalex` is the source that stays up
+when both arXiv search routes fail.
+
+Each paper records its `source` column, so a corpus can mix routes and still be auditable.
+The paper key (`arxiv_id` in the schema) is the arXiv id when the work has an arXiv
+location, otherwise `doi:<doi>`, otherwise the OpenAlex work id.
 
 ## Query syntax
 

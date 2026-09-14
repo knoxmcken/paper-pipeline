@@ -11,7 +11,7 @@ from typing import Dict, List
 
 import requests
 
-from . import __version__, arxiv, config, db, export, extract, fetch, index
+from . import __version__, arxiv, config, db, export, extract, fetch, index, openalex
 
 STAGES = ("fetch", "download", "extract", "index", "export")
 
@@ -60,6 +60,14 @@ def _discover(args, session) -> List[Dict[str, object]]:
             session=session,
             delay=args.delay,
         )
+    if source == "openalex":
+        return openalex.search(
+            args.query,
+            max_results=args.max,
+            session=session,
+            delay=args.delay,
+            mailto=getattr(args, "mailto", None),
+        )
     return arxiv.search(
         args.query,
         max_results=args.max,
@@ -74,7 +82,7 @@ def cmd_search(args) -> int:
     session = _session()
     try:
         results = _discover(args, session)
-    except arxiv.ArxivError as exc:
+    except (arxiv.ArxivError, openalex.OpenAlexError) as exc:
         print(f"search failed: {exc}", file=sys.stderr)
         return 1
     for paper in results:
@@ -118,7 +126,7 @@ def cmd_fetch(args) -> int:
         db.finish_run(conn, run_id, True, message, _now())
         print(message)
         return 0
-    except Exception as exc:  # noqa: BLE001 - surfaced to the operator
+    except (arxiv.ArxivError, openalex.OpenAlexError) as exc:  # noqa: BLE001
         db.finish_run(conn, run_id, False, str(exc), _now())
         print(f"fetch failed: {exc}", file=sys.stderr)
         return 1
@@ -254,8 +262,11 @@ def build_parser() -> argparse.ArgumentParser:
                             "keyword filter when --source rss")
         p.add_argument("-n", "--max", type=int, default=config.DEFAULT_MAX)
         p.add_argument("--category", help="arXiv category filter, e.g. cs.CL")
-        p.add_argument("--source", default="api", choices=["api", "rss"],
-                       help="api = search endpoint; rss = newest announcements per category")
+        p.add_argument("--source", default="api", choices=["api", "rss", "openalex"],
+                       help="api = arXiv search endpoint; rss = newest arXiv announcements "
+                            "per category; openalex = topical scholarly search")
+        p.add_argument("--mailto", default=None,
+                       help="contact address for the OpenAlex polite pool")
         p.add_argument("--sort", default="relevance", choices=["relevance", "date"])
         p.add_argument("--delay", type=float, default=config.DEFAULT_DELAY,
                        help="seconds between requests (arXiv asks for >=3)")

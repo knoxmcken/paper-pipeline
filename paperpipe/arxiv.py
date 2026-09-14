@@ -89,6 +89,8 @@ def entry_to_dict(entry: ET.Element) -> Dict[str, object]:
         "comment": comment,
         "pdf_url": pdf_url,
         "abs_url": config.ARXIV_ABS.format(arxiv_id=base_id) if base_id else None,
+        "source": "arxiv",
+        "cited_by": None,
     }
 
 
@@ -247,6 +249,8 @@ def rss_item_to_dict(item: ET.Element) -> Dict[str, object]:
         "comment": f"announce_type={announce}" if announce else None,
         "pdf_url": config.ARXIV_PDF.format(arxiv_id=base_id) if base_id else None,
         "abs_url": config.ARXIV_ABS.format(arxiv_id=base_id) if base_id else None,
+        "source": "arxiv-rss",
+        "cited_by": None,
     }
 
 
