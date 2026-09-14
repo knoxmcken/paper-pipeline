@@ -1,6 +1,7 @@
 import pytest
 
 from paperpipe import db
+from tests.helpers import make_paper
 
 
 @pytest.fixture()
@@ -11,40 +12,10 @@ def conn(tmp_path):
     c.close()
 
 
-def paper(**overrides):
-    base = {
-        "arxiv_id": "2401.00001",
-        "version": "v1",
-        "title": "T",
-        "abstract": "A",
-        "authors": ["A. Author"],
-        "primary_category": "cs.CL",
-        "categories": ["cs.CL"],
-        "published": "2024-01-01T00:00:00Z",
-        "updated": "2024-01-01T00:00:00Z",
-        "doi": None,
-        "journal_ref": None,
-        "comment": None,
-        "abs_url": "http://arxiv.org/abs/2401.00001",
-        "pdf_url": "http://arxiv.org/pdf/2401.00001",
-        "pdf_path": None,
-        "pdf_sha256": None,
-        "pdf_bytes": None,
-        "text_path": None,
-        "text_chars": None,
-        "page_count": None,
-        "headings": None,
-        "fetched_at": "2024-01-02T00:00:00Z",
-        "extracted_at": None,
-    }
-    base.update(overrides)
-    return base
-
-
 def test_upsert_is_idempotent_and_preserves_pdf(conn):
-    db.upsert_papers(conn, [paper()])
+    db.upsert_papers(conn, [make_paper()])
     db.update_pdf(conn, "2401.00001", {"path": "p.pdf", "sha256": "x", "bytes": 10})
-    db.upsert_papers(conn, [paper(title="T2", pdf_path=None)])
+    db.upsert_papers(conn, [make_paper(title="T2", pdf_path=None)])
     row = db.get_paper(conn, "2401.00001")
     assert row["title"] == "T2"
     assert row["pdf_path"] == "p.pdf"  # COALESCE keeps the stored pdf on re-upsert
@@ -52,7 +23,7 @@ def test_upsert_is_idempotent_and_preserves_pdf(conn):
 
 
 def test_missing_and_stats_and_search(conn):
-    db.upsert_papers(conn, [paper(), paper(arxiv_id="2401.00002", title="Graphs")])
+    db.upsert_papers(conn, [make_paper(), make_paper(arxiv_id="2401.00002", title="Graphs")])
     db.update_extraction(
         conn, "2401.00002",
         {"text_path": "t.txt", "text_chars": 5, "page_count": 3, "headings": ["1 Intro"]},

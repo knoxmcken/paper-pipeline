@@ -3,7 +3,7 @@ import json
 import pytest
 
 from paperpipe import db, export, index
-from tests.test_db import paper
+from tests.helpers import make_paper
 
 
 @pytest.fixture()
@@ -15,7 +15,7 @@ def conn(tmp_path):
 
 
 def test_index_is_derived_from_db(conn, tmp_path):
-    db.upsert_papers(conn, [paper(title="Beta"), paper(arxiv_id="2401.00002", title="alpha")])
+    db.upsert_papers(conn, [make_paper(title="Beta"), make_paper(arxiv_id="2401.00002", title="alpha")])
     path = tmp_path / "index.json"
     payload = index.build(conn, path)
     assert payload["count"] == 2
@@ -25,10 +25,10 @@ def test_index_is_derived_from_db(conn, tmp_path):
 
 
 def test_index_check_detects_drift(conn, tmp_path):
-    db.upsert_papers(conn, [paper()])
+    db.upsert_papers(conn, [make_paper()])
     path = tmp_path / "index.json"
     index.build(conn, path)
-    db.upsert_papers(conn, [paper(arxiv_id="2401.00009", title="new")])
+    db.upsert_papers(conn, [make_paper(arxiv_id="2401.00009", title="new")])
     assert index.check(conn, path) is False
     assert index.check(conn, tmp_path / "missing.json") is False
 
@@ -36,7 +36,10 @@ def test_index_check_detects_drift(conn, tmp_path):
 def test_markdown_export_groups_by_category(conn, tmp_path):
     db.upsert_papers(
         conn,
-        [paper(title="One", headings=["1 Introduction"]), paper(arxiv_id="2401.2", title="Two", primary_category="cs.AI")],
+        [
+            make_paper(title="One", headings=["1 Introduction"]),
+            make_paper(arxiv_id="2401.2", title="Two", primary_category="cs.AI"),
+        ],
     )
     path = export.write_markdown(conn, tmp_path / "exports" / "papers.md")
     body = path.read_text()
@@ -47,7 +50,7 @@ def test_markdown_export_groups_by_category(conn, tmp_path):
 
 
 def test_csv_export_has_one_row_per_paper(conn, tmp_path):
-    db.upsert_papers(conn, [paper()])
+    db.upsert_papers(conn, [make_paper()])
     path = export.build_csv(conn, tmp_path / "papers.csv")
     lines = path.read_text().strip().splitlines()
     assert len(lines) == 2 and lines[0].startswith("arxiv_id,title")

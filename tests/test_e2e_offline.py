@@ -10,8 +10,7 @@ import shutil
 import pytest
 
 from paperpipe import cli, db
-from tests.test_db import paper
-from tests.test_extract import _minimal_pdf
+from tests.helpers import make_paper, write_pdf
 
 pytestmark = pytest.mark.skipif(
     shutil.which("pdftotext") is None and shutil.which("mutool") is None,
@@ -26,10 +25,8 @@ def _args(tmp_path, *argv):
 def _seed(tmp_path, arxiv_id="2401.00001", text="Hello paperpipe"):
     conn = db.connect(tmp_path / "papers.db")
     db.init_db(conn)
-    pdf = tmp_path / "pdfs" / f"{arxiv_id}.pdf"
-    pdf.parent.mkdir(parents=True, exist_ok=True)
-    pdf.write_bytes(_minimal_pdf(text))
-    db.upsert_papers(conn, [paper(arxiv_id=arxiv_id, pdf_path=str(pdf))])
+    pdf = write_pdf(tmp_path / "pdfs" / f"{arxiv_id}.pdf", text)
+    db.upsert_papers(conn, [make_paper(arxiv_id=arxiv_id, pdf_path=str(pdf))])
     conn.close()
     return pdf
 
@@ -59,7 +56,7 @@ def test_index_check_catches_a_stale_index(tmp_path, capsys):
 
     # a paper arrives without regenerating the index -> --check must complain
     conn = db.connect(tmp_path / "papers.db")
-    db.upsert_papers(conn, [paper(arxiv_id="2401.00003", title="Late arrival")])
+    db.upsert_papers(conn, [make_paper(arxiv_id="2401.00003", title="Late arrival")])
     conn.close()
 
     assert cli.cmd_index(_args(tmp_path, "index", "--check")) == 1
@@ -69,7 +66,7 @@ def test_index_check_catches_a_stale_index(tmp_path, capsys):
 def test_extract_fails_loudly_when_the_pdf_is_missing(tmp_path, capsys):
     conn = db.connect(tmp_path / "papers.db")
     db.init_db(conn)
-    db.upsert_papers(conn, [paper(pdf_path="/nonexistent/nope.pdf")])
+    db.upsert_papers(conn, [make_paper(pdf_path="/nonexistent/nope.pdf")])
     conn.close()
 
     assert cli.cmd_extract(_args(tmp_path, "extract")) == 1
