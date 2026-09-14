@@ -59,3 +59,53 @@ def test_query_string_quotes_bare_terms():
     assert arxiv._query_string("llm agents", None) == 'all:"llm agents"'
     assert arxiv._query_string("au:Knuth", None) == "au:Knuth"
     assert arxiv._query_string("llm", "cs.CL") == '(all:"llm") AND cat:cs.CL'
+
+
+class FakeResponse:
+    def __init__(self, status_code, text="", headers=None):
+        self.status_code = status_code
+        self.text = text
+        self.headers = headers or {}
+
+
+class FakeSession:
+    """Replays a scripted list of responses and records call count."""
+
+    def __init__(self, responses):
+        self.responses = list(responses)
+        self.calls = 0
+        self.headers = {}
+
+    def get(self, url, **kwargs):
+        self.calls += 1
+        return self.responses.pop(0)
+
+
+def test_get_retries_through_a_429(monkeypatch):
+    monkeypatch.setattr(arxiv.time, "sleep", lambda _s: None)
+    session = FakeSession([FakeResponse(429, "Rate exceeded."), FakeResponse(200, "<feed/>")])
+    resp = arxiv._get(session, {}, attempts=3, base_backoff=0)
+    assert resp.status_code == 200 and session.calls == 2
+
+
+def test_get_raises_a_clear_error_when_always_throttled(monkeypatch):
+    monkeypatch.setattr(arxiv.time, "sleep", lambda _s: None)
+    session = FakeSession([FakeResponse(429, "Rate exceeded.")] * 3)
+    with pytest.raises(arxiv.ArxivError) as exc:
+        arxiv._get(session, {}, attempts=3, base_backoff=0)
+    assert "rate limit" in str(exc.value).lower()
+    assert session.calls == 3
+
+
+def test_get_surfaces_non_200_status(monkeypatch):
+    monkeypatch.setattr(arxiv.time, "sleep", lambda _s: None)
+    session = FakeSession([FakeResponse(503, "nope")] * 2)
+    with pytest.raises(arxiv.ArxivError) as exc:
+        arxiv._get(session, {}, attempts=2, base_backoff=0)
+    assert "503" in str(exc.value)
+
+
+def test_retry_after_header_is_parsed():
+    assert arxiv._retry_after(FakeResponse(429, "", {"Retry-After": "30"})) == 30.0
+    assert arxiv._retry_after(FakeResponse(429, "", {"Retry-After": "soon"})) is None
+    assert arxiv._retry_after(FakeResponse(429)) is None

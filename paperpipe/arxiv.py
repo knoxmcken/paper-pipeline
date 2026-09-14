@@ -143,16 +143,48 @@ def search(
     return results[:max_results]
 
 
-def _get(session: requests.Session, params: dict, attempts: int = 3) -> requests.Response:
+def _retry_after(resp: requests.Response) -> Optional[float]:
+    raw = resp.headers.get("Retry-After")
+    if not raw:
+        return None
+    try:
+        return max(1.0, float(raw))
+    except ValueError:
+        return None
+
+
+def _get(
+    session: requests.Session,
+    params: dict,
+    attempts: int = 5,
+    base_backoff: float = 10.0,
+    max_backoff: float = 120.0,
+) -> requests.Response:
+    """GET the API, backing off hard on 429.
+
+    arXiv throttles per IP (``429`` + a 14-byte ``Rate exceeded.`` body) and does
+    not always send ``Retry-After``, so retries use exponential backoff that can
+    outlive a single burst budget instead of hammering the endpoint.
+    """
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
             resp = session.get(config.ARXIV_API, params=params, timeout=30)
             if resp.status_code == 200:
                 return resp
-            last = ArxivError(f"arXiv returned HTTP {resp.status_code}")
+            if resp.status_code == 429:
+                wait = _retry_after(resp) or min(base_backoff * (2 ** attempt), max_backoff)
+                last = ArxivError(
+                    f"arXiv rate limit hit (HTTP 429, body={resp.text.strip()[:60]!r}); "
+                    f"waited {wait:.0f}s"
+                )
+                if attempt < attempts - 1:
+                    time.sleep(wait)
+                    continue
+            else:
+                last = ArxivError(f"arXiv returned HTTP {resp.status_code}")
         except requests.RequestException as exc:
             last = exc
         if attempt < attempts - 1:
-            time.sleep(3 * (attempt + 1))
+            time.sleep(min(3 * (attempt + 1), max_backoff))
     raise ArxivError(f"arXiv request failed: {last}")
