@@ -1,9 +1,14 @@
-"""arXiv API search + Atom parsing (stdlib XML, no extra deps)."""
+"""arXiv discovery: the search API (Atom) and the per-category RSS feeds.
+
+Both are parsed with the stdlib XML parser and normalised to the same dict shape,
+so every downstream stage is source-agnostic.
+"""
 
 from __future__ import annotations
 
 import time
 import xml.etree.ElementTree as ET
+from email.utils import parsedate_to_datetime
 from typing import Dict, List, Optional
 
 import requests
@@ -12,6 +17,8 @@ from . import config
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
+RSS_ARXIV = "{http://arxiv.org/schemas/atom}"
+DC = "{http://purl.org/dc/elements/1.1/}"
 
 
 class ArxivError(RuntimeError):
@@ -159,6 +166,7 @@ def _get(
     attempts: int = 5,
     base_backoff: float = 10.0,
     max_backoff: float = 120.0,
+    url: Optional[str] = None,
 ) -> requests.Response:
     """GET the API, backing off hard on 429.
 
@@ -166,10 +174,11 @@ def _get(
     not always send ``Retry-After``, so retries use exponential backoff that can
     outlive a single burst budget instead of hammering the endpoint.
     """
+    target = url or config.ARXIV_API
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
-            resp = session.get(config.ARXIV_API, params=params, timeout=30)
+            resp = session.get(target, params=params, timeout=30)
             if resp.status_code == 200:
                 return resp
             if resp.status_code == 429:
@@ -188,3 +197,109 @@ def _get(
         if attempt < attempts - 1:
             time.sleep(min(3 * (attempt + 1), max_backoff))
     raise ArxivError(f"arXiv request failed: {last}")
+
+
+def rss_url(category: str) -> str:
+    return config.ARXIV_RSS.format(category=category)
+
+
+def _abstract_from_description(description: Optional[str]) -> Optional[str]:
+    if not description:
+        return None
+    marker = "Abstract:"
+    text = description.split(marker, 1)[1] if marker in description else description
+    return " ".join(text.split()) or None
+
+
+def _iso_from_rfc822(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        return parsedate_to_datetime(value).isoformat()
+    except (TypeError, ValueError):
+        return None
+
+
+def rss_item_to_dict(item: ET.Element) -> Dict[str, object]:
+    raw_id = (item.findtext("guid") or "").strip()
+    if raw_id.startswith("oai:arXiv.org:"):
+        base_id, version = _split_id(raw_id.split("oai:arXiv.org:", 1)[1])
+    else:
+        base_id, version = _split_id(item.findtext("link") or "")
+    categories = [c.text.strip() for c in item.findall("category") if (c.text or "").strip()]
+    creators = [c.text for c in item.findall(f"{DC}creator") if c.text]
+    authors: List[str] = []
+    for creator in creators:
+        authors.extend(a.strip() for a in creator.split(",") if a.strip())
+    announce = item.findtext(f"{RSS_ARXIV}announce_type") or ""
+    return {
+        "arxiv_id": base_id,
+        "version": version,
+        "title": " ".join((item.findtext("title") or "(untitled)").split()),
+        "abstract": _abstract_from_description(item.findtext("description")),
+        "authors": authors,
+        "primary_category": categories[0] if categories else None,
+        "categories": categories,
+        "published": _iso_from_rfc822(item.findtext("pubDate")),
+        "updated": _iso_from_rfc822(item.findtext("pubDate")),
+        "doi": None,
+        "journal_ref": None,
+        "comment": f"announce_type={announce}" if announce else None,
+        "pdf_url": config.ARXIV_PDF.format(arxiv_id=base_id) if base_id else None,
+        "abs_url": config.ARXIV_ABS.format(arxiv_id=base_id) if base_id else None,
+    }
+
+
+def parse_rss(xml_text: str) -> List[Dict[str, object]]:
+    """Parse an arXiv category RSS feed into the same shape as ``parse_feed``."""
+    try:
+        root = ET.fromstring(xml_text)
+    except ET.ParseError as exc:
+        raise ArxivError(f"could not parse arXiv RSS: {exc}") from exc
+    return [rss_item_to_dict(i) for i in root.findall(".//item")]
+
+
+def _matches(paper: Dict[str, object], keyword: Optional[str]) -> bool:
+    if not keyword or not keyword.strip():
+        return True
+    needle = keyword.lower()
+    haystack = " ".join(
+        [
+            str(paper.get("title") or ""),
+            str(paper.get("abstract") or ""),
+            " ".join(paper.get("authors") or []),
+        ]
+    ).lower()
+    return all(term in haystack for term in needle.split())
+
+
+def latest(
+    categories: List[str],
+    keyword: Optional[str] = None,
+    max_results: int = config.DEFAULT_MAX,
+    session: Optional[requests.Session] = None,
+    delay: float = config.DEFAULT_DELAY,
+) -> List[Dict[str, object]]:
+    """Newest announcements from the per-category RSS feeds.
+
+    The feed carries one announcement batch per category (no server-side search),
+    so ``keyword`` filters client-side over title/abstract/authors. An empty
+    keyword returns the batch as-is.
+    """
+    sess = session or requests.Session()
+    sess.headers.setdefault("User-Agent", config.USER_AGENT)
+    collected: List[Dict[str, object]] = []
+    seen = set()
+    for index, category in enumerate(categories):
+        if index:
+            time.sleep(delay)
+        resp = _get(sess, {}, url=rss_url(category))
+        for paper in parse_rss(resp.text):
+            if not paper["arxiv_id"] or paper["arxiv_id"] in seen:
+                continue
+            if _matches(paper, keyword):
+                seen.add(paper["arxiv_id"])
+                collected.append(paper)
+        if len(collected) >= max_results:
+            break
+    return collected[:max_results]

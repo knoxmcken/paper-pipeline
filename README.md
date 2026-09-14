@@ -31,6 +31,9 @@ and falls back to `mutool` (mupdf-tools). Nothing else.
 # one-shot: search, download, extract, index, export
 paperpipe run -q "retrieval augmented generation" -n 25 --category cs.CL
 
+# when the search API is rate-limiting you, harvest the newest announcements instead
+paperpipe run -q "retrieval" --source rss --category cs.CL,cs.LG -n 10
+
 # step by step
 paperpipe search -q "graph neural networks" -n 10     # query only, stores nothing
 paperpipe fetch  -q "graph neural networks" -n 10     # metadata + PDFs into data/
@@ -72,6 +75,20 @@ Point it elsewhere with `--data-dir` or `PAPERPIPE_DATA`.
   artifact columns, so richer metadata will not wipe already-downloaded file paths.
 - **Every run is recorded** in the `runs` table (kind, args, timing, outcome).
 
+## Discovery sources
+
+Two, selected with `--source`:
+
+| Source | Endpoint | Semantics |
+|---|---|---|
+| `api` (default) | `export.arxiv.org/api/query` | real search: relevance/date ranking, huge recall, field queries |
+| `rss` | `rss.arxiv.org/rss/<category>` | newest announcement batch per category; `-q` filters client-side |
+
+`--source rss` is the fallback for when the search API answers `429 Rate exceeded.`
+(arXiv throttles per IP, and shared/cloud egress addresses get hit hard). PDF
+fetches come from `arxiv.org/pdf/...`, a different service that keeps working
+while the API is throttled, so an already-known paper list still downloads fine.
+
 ## Query syntax
 
 `-q` takes plain words (auto-quoted as an `all:` search) or an arXiv field query:
@@ -81,6 +98,10 @@ paperpipe run -q 'au:Hinton' -n 20
 paperpipe run -q 'ti:"chain of thought"' -n 20
 paperpipe run -q 'abs:transformer' -n 20 --sort date
 ```
+
+With `--source rss` there is no server-side search, so `-q` is a plain keyword
+filter: every whitespace-separated term must appear in the title, abstract or
+author list. Pass `-q ""` to keep the whole batch.
 
 ## Tests
 

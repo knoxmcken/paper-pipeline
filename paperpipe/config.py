@@ -11,6 +11,7 @@ from pathlib import Path
 DEFAULT_DATA_DIR = Path(os.environ.get("PAPERPIPE_DATA", "data"))
 
 ARXIV_API = os.environ.get("PAPERPIPE_ARXIV_API", "https://export.arxiv.org/api/query")
+ARXIV_RSS = os.environ.get("PAPERPIPE_ARXIV_RSS", "https://rss.arxiv.org/rss/{category}")
 ARXIV_PDF = "https://arxiv.org/pdf/{arxiv_id}"
 ARXIV_ABS = "https://arxiv.org/abs/{arxiv_id}"
 

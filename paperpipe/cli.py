@@ -46,9 +46,21 @@ def _session() -> requests.Session:
     return sess
 
 
-def cmd_search(args) -> int:
-    session = _session()
-    results = arxiv.search(
+def _discover(args, session) -> List[Dict[str, object]]:
+    """Run the selected discovery source and return normalised paper dicts."""
+    source = getattr(args, "source", "api")
+    if source == "rss":
+        if not args.category:
+            raise arxiv.ArxivError("the rss source needs --category (e.g. --category cs.CL)")
+        categories = [c.strip() for c in args.category.split(",") if c.strip()]
+        return arxiv.latest(
+            categories,
+            keyword=args.query,
+            max_results=args.max,
+            session=session,
+            delay=args.delay,
+        )
+    return arxiv.search(
         args.query,
         max_results=args.max,
         sort=args.sort,
@@ -56,6 +68,15 @@ def cmd_search(args) -> int:
         delay=args.delay,
         category=args.category,
     )
+
+
+def cmd_search(args) -> int:
+    session = _session()
+    try:
+        results = _discover(args, session)
+    except arxiv.ArxivError as exc:
+        print(f"search failed: {exc}", file=sys.stderr)
+        return 1
     for paper in results:
         authors = ", ".join((paper.get("authors") or [])[:3]) or "?"
         print(f"{paper['arxiv_id']:<16} {(paper.get('published') or '')[:10]}  {paper['title'][:70]}")
@@ -69,15 +90,8 @@ def cmd_fetch(args) -> int:
     run_id = db.start_run(conn, "fetch", json.dumps(vars(args), default=str), _now())
     session = _session()
     try:
-        papers = arxiv.search(
-            args.query,
-            max_results=args.max,
-            sort=args.sort,
-            session=session,
-            delay=args.delay,
-            category=args.category,
-        )
-        print(f"arXiv: {len(papers)} paper(s) for query {args.query!r}")
+        papers = _discover(args, session)
+        print(f"arXiv ({args.source}): {len(papers)} paper(s) for query {args.query!r}")
         for paper in papers:
             paper["fetched_at"] = _now()
         db.upsert_papers(conn, papers)
@@ -235,9 +249,13 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--data-dir", default=argparse.SUPPRESS)
 
     def add_fetch_flags(p):
-        p.add_argument("-q", "--query", required=True, help="search terms or arXiv field query")
+        p.add_argument("-q", "--query", required=True,
+                       help="search terms, an arXiv field query, or a client-side "
+                            "keyword filter when --source rss")
         p.add_argument("-n", "--max", type=int, default=config.DEFAULT_MAX)
         p.add_argument("--category", help="arXiv category filter, e.g. cs.CL")
+        p.add_argument("--source", default="api", choices=["api", "rss"],
+                       help="api = search endpoint; rss = newest announcements per category")
         p.add_argument("--sort", default="relevance", choices=["relevance", "date"])
         p.add_argument("--delay", type=float, default=config.DEFAULT_DELAY,
                        help="seconds between requests (arXiv asks for >=3)")

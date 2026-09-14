@@ -55,6 +55,88 @@ def test_split_id_handles_old_style_and_missing_version():
     assert arxiv._split_id("http://arxiv.org/abs/2401.12345") == ("2401.12345", "")
 
 
+RSS = textwrap.dedent(
+    """<?xml version="1.0" encoding="UTF-8"?>
+    <rss xmlns:arxiv="http://arxiv.org/schemas/atom" xmlns:dc="http://purl.org/dc/elements/1.1/"
+         xmlns:atom="http://www.w3.org/2005/Atom" version="2.0">
+      <channel>
+        <title>cs.CL updates on arXiv.org</title>
+        <item>
+          <title>R2VC: Modular
+          Fact-Checking</title>
+          <link>https://arxiv.org/abs/2609.11955</link>
+          <description>arXiv:2609.11955v1 Announce Type: new
+Abstract: We present a modular pipeline for retrieval and verification.</description>
+          <guid isPermaLink="false">oai:arXiv.org:2609.11955v1</guid>
+          <category>cs.CL</category>
+          <category>cs.LG</category>
+          <pubDate>Mon, 14 Sep 2026 00:00:00 -0400</pubDate>
+          <arxiv:announce_type>new</arxiv:announce_type>
+          <dc:creator>Dhruv Dixit, Paritosh Pandey</dc:creator>
+        </item>
+        <item>
+          <title>A Graph Paper</title>
+          <link>https://arxiv.org/abs/2609.99999</link>
+          <description>arXiv:2609.99999v2 Announce Type: replace
+Abstract: A graph paper about nodes and edges.</description>
+          <guid isPermaLink="false">oai:arXiv.org:2609.99999v2</guid>
+          <category>cs.CL</category>
+          <pubDate>Mon, 14 Sep 2026 00:00:00 -0400</pubDate>
+          <arxiv:announce_type>replace</arxiv:announce_type>
+          <dc:creator>Ada Lovelace</dc:creator>
+        </item>
+      </channel>
+    </rss>
+    """
+)
+
+
+def test_parse_rss_normalises_to_the_api_shape():
+    papers = arxiv.parse_rss(RSS)
+    assert len(papers) == 2
+    first = papers[0]
+    assert first["arxiv_id"] == "2609.11955" and first["version"] == "v1"
+    assert first["title"] == "R2VC: Modular Fact-Checking"
+    assert first["abstract"].startswith("We present a modular pipeline")
+    assert first["authors"] == ["Dhruv Dixit", "Paritosh Pandey"]
+    assert first["categories"] == ["cs.CL", "cs.LG"]
+    assert first["primary_category"] == "cs.CL"
+    assert first["published"].startswith("2026-09-14")
+    assert first["pdf_url"].endswith("/pdf/2609.11955")
+    assert first["comment"] == "announce_type=new"
+
+
+def test_parse_rss_rejects_garbage():
+    with pytest.raises(arxiv.ArxivError):
+        arxiv.parse_rss("<rss")
+
+
+def test_keyword_filter_matches_all_terms():
+    papers = arxiv.parse_rss(RSS)
+    assert len([p for p in papers if arxiv._matches(p, None)]) == 2
+    assert len([p for p in papers if arxiv._matches(p, "")]) == 2
+    assert [p["arxiv_id"] for p in papers if arxiv._matches(p, "retrieval")] == ["2609.11955"]
+    assert [p["arxiv_id"] for p in papers if arxiv._matches(p, "modular retrieval")] == ["2609.11955"]
+    assert [p["arxiv_id"] for p in papers if arxiv._matches(p, "lovelace")] == ["2609.99999"]
+    assert [p for p in papers if arxiv._matches(p, "nonexistentterm")] == []
+
+
+def test_latest_uses_the_rss_endpoint_and_dedupes(monkeypatch):
+    monkeypatch.setattr(arxiv.time, "sleep", lambda _s: None)
+    session = FakeSession([FakeResponse(200, RSS), FakeResponse(200, RSS)])
+    papers = arxiv.latest(["cs.CL", "cs.LG"], keyword=None, max_results=10, session=session)
+    # the second feed repeats the same ids, so only the first batch is kept
+    assert [p["arxiv_id"] for p in papers] == ["2609.11955", "2609.99999"]
+    assert session.calls == 2
+
+
+def test_latest_honours_max_results(monkeypatch):
+    monkeypatch.setattr(arxiv.time, "sleep", lambda _s: None)
+    session = FakeSession([FakeResponse(200, RSS)])
+    papers = arxiv.latest(["cs.CL"], keyword=None, max_results=1, session=session)
+    assert len(papers) == 1
+
+
 def test_query_string_quotes_bare_terms():
     assert arxiv._query_string("llm agents", None) == 'all:"llm agents"'
     assert arxiv._query_string("au:Knuth", None) == "au:Knuth"
