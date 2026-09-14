@@ -67,6 +67,8 @@ def _discover(args, session) -> List[Dict[str, object]]:
             session=session,
             delay=args.delay,
             mailto=getattr(args, "mailto", None),
+            arxiv_only=getattr(args, "arxiv_only", False),
+            search_field=getattr(args, "search_field", "default"),
         )
     return arxiv.search(
         args.query,
@@ -99,20 +101,25 @@ def cmd_fetch(args) -> int:
     session = _session()
     try:
         papers = _discover(args, session)
-        print(f"arXiv ({args.source}): {len(papers)} paper(s) for query {args.query!r}")
+        print(f"{args.source}: {len(papers)} paper(s) for query {args.query!r}")
         for paper in papers:
             paper["fetched_at"] = _now()
         db.upsert_papers(conn, papers)
 
-        downloaded = failed = 0
+        downloaded = failed = unlinked = 0
         if not args.no_download:
             for paper in papers:
+                url = paper.get("pdf_url")
+                if not url:
+                    unlinked += 1
+                    print(f"  skip {paper['arxiv_id']}: source listed no open-access PDF")
+                    continue
                 try:
                     info = fetch.download_pdf(
                         paper["arxiv_id"],
                         paths["pdfs"],
                         session=session,
-                        url=paper.get("pdf_url"),
+                        url=url,
                         delay=args.delay,
                         force=args.force,
                     )
@@ -122,7 +129,7 @@ def cmd_fetch(args) -> int:
                 except fetch.FetchError as exc:
                     failed += 1
                     print(f"  FAIL {paper['arxiv_id']}: {exc}", file=sys.stderr)
-        message = f"{len(papers)} metadata, {downloaded} pdf, {failed} failed"
+        message = f"{len(papers)} metadata, {downloaded} pdf, {unlinked} no-url, {failed} failed"
         db.finish_run(conn, run_id, True, message, _now())
         print(message)
         return 0
@@ -267,6 +274,13 @@ def build_parser() -> argparse.ArgumentParser:
                             "per category; openalex = topical scholarly search")
         p.add_argument("--mailto", default=None,
                        help="contact address for the OpenAlex polite pool")
+        p.add_argument("--arxiv-only", action="store_true",
+                       help="openalex: keep only works with an arXiv copy, i.e. ones "
+                            "whose full text is actually downloadable")
+        p.add_argument("--search-field", default="default",
+                       choices=["default", "title-and-abstract"],
+                       help="openalex: 'default' is broad and fuzzy, "
+                            "'title-and-abstract' is strict and better for corpora")
         p.add_argument("--sort", default="relevance", choices=["relevance", "date"])
         p.add_argument("--delay", type=float, default=config.DEFAULT_DELAY,
                        help="seconds between requests (arXiv asks for >=3)")

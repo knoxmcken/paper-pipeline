@@ -133,23 +133,40 @@ def search(
     mailto: Optional[str] = None,
     page_size: int = 100,
     open_access_only: bool = False,
+    arxiv_only: bool = False,
+    search_field: str = "default",
     attempts: int = 4,
 ) -> List[Dict[str, object]]:
-    """Topical search with cursor paging."""
+    """Topical search with cursor paging.
+
+    ``search_field``: ``default`` searches broadly (title, abstract and more) and
+    is fuzzy; ``title-and-abstract`` is far stricter and is the better choice for
+    building a corpus, where off-topic hits are worse than a smaller yield.
+
+    ``arxiv_only`` keeps only works that have an arXiv location, i.e. papers whose
+    full text is actually downloadable right now. Paging continues through
+    non-matching pages until ``max_results`` arXiv works are collected.
+    """
     sess = session or requests.Session()
     sess.headers.setdefault("User-Agent", config.USER_AGENT)
+    filters = []
+    if open_access_only:
+        filters.append("is_oa:true")
+    if search_field == "title-and-abstract":
+        filters.append(f"title_and_abstract.search:{query}")
     base_params = {
-        "search": query,
         "per-page": str(min(page_size, 200)),
-        "mailto": mailto or config.MAILTO,
+        "mailto": mailto if mailto is not None else config.MAILTO,
         "select": (
             "id,doi,title,display_name,publication_date,publication_year,authorships,"
             "primary_location,best_oa_location,locations,open_access,primary_topic,topics,"
             "abstract_inverted_index,type,cited_by_count,ids"
         ),
     }
-    if open_access_only:
-        base_params["filter"] = "is_oa:true"
+    if search_field != "title-and-abstract":
+        base_params["search"] = query
+    if filters:
+        base_params["filter"] = ",".join(filters)
 
     collected: List[Dict[str, object]] = []
     cursor = "*"
@@ -159,7 +176,12 @@ def search(
         results = payload.get("results") or []
         if not results:
             break
-        collected.extend(work_to_dict(w) for w in results)
+        for work in results:
+            if arxiv_only and _arxiv_id(work) is None:
+                continue
+            collected.append(work_to_dict(work))
+            if len(collected) >= max_results:
+                break
         cursor = (payload.get("meta") or {}).get("next_cursor")
         if len(collected) < max_results and cursor:
             time.sleep(delay)

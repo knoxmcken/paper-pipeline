@@ -39,7 +39,11 @@ def download_pdf(
     force: bool = False,
     attempts: int = 3,
 ) -> Dict[str, object]:
-    """Download one arXiv PDF.
+    """Download one PDF from ``url``.
+
+    Never guesses a URL: a paper whose source gave no open-access PDF link is
+    skipped by the caller rather than fetched from an invented address (which is
+    how ``arxiv.org/pdf/doi:10.1109/...`` used to happen for DOI-keyed works).
 
     Always verifies the ``%PDF-`` magic bytes: arXiv (and many portals) answer
     bad/blocked paths with an HTML page under HTTP 200, so status alone is not
@@ -55,8 +59,10 @@ def download_pdf(
             "bytes": dest.stat().st_size,
             "skipped": True,
         }
+    if not url:
+        raise FetchError(f"no PDF url for {arxiv_id}")
 
-    target = url or config.ARXIV_PDF.format(arxiv_id=arxiv_id)
+    target = url
     sess = session or requests.Session()
     sess.headers.setdefault("User-Agent", config.USER_AGENT)
     last: Optional[Exception] = None

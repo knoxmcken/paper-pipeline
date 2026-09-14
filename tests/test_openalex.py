@@ -114,6 +114,30 @@ def test_search_can_restrict_to_open_access(monkeypatch):
     assert session.calls[0]["filter"] == "is_oa:true"
 
 
+def test_arxiv_only_skips_works_without_an_arxiv_copy(monkeypatch):
+    monkeypatch.setattr(openalex.time, "sleep", lambda _s: None)
+    plain = dict(WORK, id="https://openalex.org/W1", doi="https://doi.org/10.1/x", ids={},
+                 primary_location=None, best_oa_location=None, open_access={}, locations=[])
+    page = FakeResponse(200, {"results": [plain, WORK], "meta": {}})
+    session = FakeSession([page, FakeResponse(200, {"results": [plain, WORK], "meta": {}})])
+
+    kept = openalex.search("agents", max_results=5, session=session, delay=0, arxiv_only=True)
+    assert [p["arxiv_id"] for p in kept] == ["2401.12345"]
+
+    everything = openalex.search("agents", max_results=5, session=session, delay=0)
+    assert len(everything) == 2
+
+
+def test_title_and_abstract_field_switches_to_a_filter(monkeypatch):
+    monkeypatch.setattr(openalex.time, "sleep", lambda _s: None)
+    session = FakeSession([FakeResponse(200, {"results": [WORK], "meta": {}})])
+    openalex.search("ai agents", max_results=1, session=session, delay=0,
+                    search_field="title-and-abstract")
+    params = session.calls[0]
+    assert "search" not in params
+    assert params["filter"] == "title_and_abstract.search:ai agents"
+
+
 def test_search_raises_a_clear_error_on_http_failure(monkeypatch):
     monkeypatch.setattr(openalex.time, "sleep", lambda _s: None)
     session = FakeSession([FakeResponse(500), FakeResponse(500)])
@@ -124,6 +148,8 @@ def test_search_raises_a_clear_error_on_http_failure(monkeypatch):
 
 def test_cli_accepts_the_openalex_source():
     args = cli.build_parser().parse_args(
-        ["fetch", "-q", "ai agents cybersecurity", "--source", "openalex", "--mailto", "a@b.c"]
+        ["fetch", "-q", "ai agents cybersecurity", "--source", "openalex", "--mailto", "a@b.c",
+         "--arxiv-only", "--search-field", "title-and-abstract"]
     )
     assert args.source == "openalex" and args.mailto == "a@b.c"
+    assert args.arxiv_only is True and args.search_field == "title-and-abstract"
