@@ -295,6 +295,19 @@ def cmd_stats(args) -> int:
     return 0
 
 
+def cmd_serve(args) -> int:
+    try:
+        import uvicorn
+    except ImportError:
+        print("serve needs the 'web' extra: pip install -e '.[web]'", file=sys.stderr)
+        return 1
+    from .webapp import create_app
+
+    app = create_app(Path(args.data_dir))
+    uvicorn.run(app, host=args.host, port=args.port)
+    return 0
+
+
 def cmd_show(args) -> int:
     conn, _ = _open(args)
     term = args.term
@@ -381,6 +394,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_stats = sub.add_parser("stats", parents=[common], help="database summary")
     p_stats.set_defaults(func=cmd_stats, id=None)
+
+    p_serve = sub.add_parser("serve", parents=[common], help="run the local web UI")
+    p_serve.add_argument("--host", default="127.0.0.1")
+    p_serve.add_argument("--port", type=int, default=8000)
+    p_serve.set_defaults(func=cmd_serve, id=None)
 
     p_show = sub.add_parser("show", parents=[common], help="list or search stored papers")
     p_show.add_argument("term", nargs="?", default=None)

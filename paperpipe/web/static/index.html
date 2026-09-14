@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>paper-pipeline</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { color-scheme: light dark; }
+  body { font-family: -apple-system, Segoe UI, Helvetica, Arial, sans-serif; margin: 0; padding: 0 1.5rem 3rem; max-width: 1000px; margin-inline: auto; }
+  h1 { font-size: 1.3rem; margin-top: 1.2rem; }
+  h2 { font-size: 1rem; opacity: 0.75; margin-bottom: 0.4rem; }
+  .stats { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .stat { border: 1px solid #8884; border-radius: 8px; padding: 0.6rem 1rem; min-width: 90px; }
+  .stat b { display: block; font-size: 1.4rem; }
+  .stat span { font-size: 0.75rem; opacity: 0.7; }
+  section { margin-bottom: 2rem; }
+  input, select, button { font: inherit; padding: 0.35rem 0.5rem; border-radius: 6px; border: 1px solid #8886; }
+  button { cursor: pointer; }
+  .row { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: center; margin-bottom: 0.6rem; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+  th, td { text-align: left; padding: 0.35rem 0.4rem; border-bottom: 1px solid #8883; vertical-align: top; }
+  tr.paper-row { cursor: pointer; }
+  tr.paper-row:hover { background: #8881; }
+  #detail { border: 1px solid #8884; border-radius: 8px; padding: 0.8rem 1rem; display: none; }
+  #detail.open { display: block; }
+  #detail h3 { margin-top: 0; }
+  .muted { opacity: 0.65; font-size: 0.85rem; }
+  pre.log { background: #0002; border-radius: 6px; padding: 0.6rem; max-height: 220px; overflow-y: auto; font-size: 0.78rem; white-space: pre-wrap; }
+  .badge { display: inline-block; padding: 0.1rem 0.5rem; border-radius: 999px; font-size: 0.72rem; margin-left: 0.4rem; }
+  .badge.done { background: #1b7a3c33; color: #1b7a3c; }
+  .badge.error { background: #b3261e33; color: #b3261e; }
+  .badge.running, .badge.queued { background: #8886; }
+</style>
+</head>
+<body>
+  <h1>paper-pipeline</h1>
+
+  <section>
+    <h2>Corpus stats</h2>
+    <div class="stats" id="stats"></div>
+  </section>
+
+  <section>
+    <h2>Search</h2>
+    <div class="row">
+      <input id="search-q" placeholder="title, author, abstract, arXiv id..." size="40">
+      <button onclick="loadPapers()">Search</button>
+      <button onclick="document.getElementById('search-q').value=''; loadPapers()">Clear</button>
+    </div>
+    <table>
+      <thead><tr><th>arXiv id</th><th>Published</th><th>Title</th><th>Category</th></tr></thead>
+      <tbody id="papers-body"></tbody>
+    </table>
+    <div id="detail"></div>
+  </section>
+
+  <section>
+    <h2>Run pipeline stages</h2>
+    <div class="row">
+      <input id="fetch-query" placeholder="fetch query" size="24">
+      <input id="fetch-max" type="number" value="25" size="4" style="width:5rem">
+      <select id="fetch-source">
+        <option value="api">api</option>
+        <option value="rss">rss</option>
+        <option value="openalex">openalex</option>
+      </select>
+      <input id="fetch-category" placeholder="category (optional)" size="14">
+      <button onclick="runFetch()">Fetch</button>
+    </div>
+    <div class="row">
+      <button onclick="runAction('extract')">Extract text</button>
+      <button onclick="runAction('index')">Rebuild index</button>
+      <select id="export-format">
+        <option value="all">all</option>
+        <option value="md">md</option>
+        <option value="csv">csv</option>
+      </select>
+      <button onclick="runExport()">Export</button>
+    </div>
+    <div id="job-status" class="muted"></div>
+    <pre class="log" id="job-log"></pre>
+  </section>
+
+  <section>
+    <h2>Recent runs</h2>
+    <table>
+      <thead><tr><th>Kind</th><th>Started</th><th>OK</th><th>Message</th></tr></thead>
+      <tbody id="runs-body"></tbody>
+    </table>
+  </section>
+
+<script>
+async function api(path, opts) {
+  const res = await fetch(path, opts);
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
+async function loadStats() {
+  const s = await api('/api/stats');
+  const el = document.getElementById('stats');
+  const cards = [
+    ['papers', s.papers], ['with PDF', s.with_pdf], ['with text', s.with_text], ['pages', s.pages]
+  ];
+  el.innerHTML = cards.map(([label, val]) =>
+    `<div class="stat"><b>${val}</b><span>${label}</span></div>`).join('');
+}
+
+async function loadPapers() {
+  const q = document.getElementById('search-q').value.trim();
+  const data = await api('/api/papers' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+  const body = document.getElementById('papers-body');
+  body.innerHTML = data.papers.map(p => `
+    <tr class="paper-row" onclick="showPaper('${p.arxiv_id}')">
+      <td>${p.arxiv_id}</td>
+      <td>${(p.published || '').slice(0,10)}</td>
+      <td>${escapeHtml(p.title)}</td>
+      <td>${p.primary_category || ''}</td>
+    </tr>`).join('');
+}
+
+function escapeHtml(s) {
+  const d = document.createElement('div');
+  d.textContent = s || '';
+  return d.innerHTML;
+}
+
+async function showPaper(id) {
+  const p = await api(`/api/papers/${encodeURIComponent(id)}`);
+  const el = document.getElementById('detail');
+  el.classList.add('open');
+  const authors = (p.authors || []).join(', ');
+  const headings = (p.headings || []).slice(0, 12).join(' · ');
+  el.innerHTML = `
+    <h3>${escapeHtml(p.title)}</h3>
+    <div class="muted">${escapeHtml(authors)} — ${(p.published||'').slice(0,10)} — ${p.primary_category || ''}</div>
+    <p>${escapeHtml(p.abstract || '')}</p>
+    <div class="muted">${headings}</div>
+    <div class="row">
+      ${p.abs_url ? `<a href="${p.abs_url}" target="_blank">abstract</a>` : ''}
+      ${p.pdf_path ? `<span class="muted">PDF stored (${p.pdf_bytes || 0} bytes)</span>` : '<span class="muted">no PDF</span>'}
+      ${p.text_path ? `<span class="muted">text extracted, ${p.page_count || '?'}p</span>` : '<span class="muted">no extracted text</span>'}
+    </div>`;
+}
+
+async function loadRuns() {
+  const data = await api('/api/runs');
+  const body = document.getElementById('runs-body');
+  body.innerHTML = data.runs.map(r => `
+    <tr>
+      <td>${r.kind}</td>
+      <td>${(r.started_at || '').replace('T',' ').slice(0,19)}</td>
+      <td>${r.ok === null ? '…' : (r.ok ? '✓' : '✗')}</td>
+      <td>${escapeHtml(r.message || '')}</td>
+    </tr>`).join('');
+}
+
+let pollTimer = null;
+
+function setJobBadge(status) {
+  document.getElementById('job-status').innerHTML =
+    `job <span class="badge ${status}">${status}</span>`;
+}
+
+async function pollJob(id) {
+  const job = await api(`/api/jobs/${id}`);
+  setJobBadge(job.status);
+  document.getElementById('job-log').textContent = job.output.join('\n');
+  if (job.status === 'done' || job.status === 'error') {
+    clearInterval(pollTimer);
+    loadStats(); loadPapers(); loadRuns();
+  }
+}
+
+function watchJob(job) {
+  setJobBadge(job.status);
+  document.getElementById('job-log').textContent = '';
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(() => pollJob(job.id), 1000);
+}
+
+async function runFetch() {
+  const body = {
+    query: document.getElementById('fetch-query').value,
+    max: parseInt(document.getElementById('fetch-max').value, 10) || 25,
+    source: document.getElementById('fetch-source').value,
+    category: document.getElementById('fetch-category').value || null,
+  };
+  if (!body.query) { alert('query is required'); return; }
+  const job = await api('/api/actions/fetch', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(body) });
+  watchJob(job);
+}
+
+async function runAction(kind) {
+  const job = await api(`/api/actions/${kind}`, { method: 'POST' });
+  watchJob(job);
+}
+
+async function runExport() {
+  const format = document.getElementById('export-format').value;
+  const job = await api('/api/actions/export', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({format}) });
+  watchJob(job);
+}
+
+loadStats();
+loadPapers();
+loadRuns();
+</script>
+</body>
+</html>

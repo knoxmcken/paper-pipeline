@@ -50,6 +50,18 @@ paperpipe show "attention"
 paperpipe index --check                                 # is index.json in sync with the DB?
 ```
 
+## Web UI
+
+```bash
+pip install -e ".[web]"
+paperpipe serve                # http://127.0.0.1:8000
+```
+
+Browse and search the stored corpus, view a paper's abstract/headings/artifact status,
+and trigger `fetch` / `extract` / `index` / `export` as background jobs with live log
+output. Each action shells out to the same `paperpipe` CLI commands, so behaviour never
+drifts from the command line; `--data-dir`/`PAPERPIPE_DATA` apply the same way.
+
 Data layout (git-ignored):
 
 ```
