@@ -75,6 +75,36 @@ data/
 
 Point it elsewhere with `--data-dir` or `PAPERPIPE_DATA`.
 
+## Deploying to Cloud Run
+
+A `Dockerfile` builds the web UI into a container (`paperpipe serve --host 0.0.0.0
+--port $PORT`, reading `PAPERPIPE_DATA` for the data dir, defaulting to `/data`).
+
+Cloud Run's local filesystem is ephemeral, so `/data` is backed by a GCS bucket mounted
+as a Cloud Run volume (gen2 execution environment). `deploy/cloudrun-deploy.sh` sets
+this all up: an Artifact Registry repo, the data bucket, IAM so the runtime service
+account can read/write it, a Cloud Build image build, and the `gcloud run deploy`.
+
+```bash
+PROJECT_ID=personal-tools-isotopes55 \
+REGION=us-central1 \
+SERVICE_ACCOUNT=paper-pipeline-deploy@personal-tools-isotopes55.iam.gserviceaccount.com \
+./deploy/cloudrun-deploy.sh
+```
+
+Notes:
+
+- **Single writer.** SQLite plus GCS FUSE doesn't give real cross-instance file
+  locking, so the service deploys with `--max-instances=1`. Fine for personal/low-traffic
+  use; not a scale-out setup.
+- **Private by default.** The service deploys with `--no-allow-unauthenticated` since
+  the action endpoints can trigger pipeline runs against your corpus. The script prints
+  the commands to grant yourself `roles/run.invoker`, or to open it up with `allUsers`
+  if you actually want a public instance.
+- **First deploy starts with an empty `/data`.** Seed it by copying an existing corpus
+  into the bucket (`gcloud storage cp -r data/* gs://<bucket>/`) before or after the
+  first deploy, or just run `fetch`/`index` from the deployed UI.
+
 ## Design notes
 
 - **The DB is the master.** `index.json` and the exports are derived and can be deleted
