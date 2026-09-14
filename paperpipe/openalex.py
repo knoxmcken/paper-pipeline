@@ -103,7 +103,9 @@ def work_to_dict(work: Dict[str, object]) -> Dict[str, object]:
     published = work.get("publication_date") or (
         f"{work['publication_year']}-01-01" if work.get("publication_year") else None
     )
-    pdf_url = _pdf_url(work)
+    # Prefer the arXiv copy when the work has one: OpenAlex often lists a publisher
+    # DOI as best_oa_location, and those routinely 403 for us (Elsevier, IEEE, MDPI).
+    pdf_url = config.ARXIV_PDF.format(arxiv_id=arxiv_id) if arxiv_id else _pdf_url(work)
     return {
         "arxiv_id": key,
         "version": "",

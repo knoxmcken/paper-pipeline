@@ -70,6 +70,27 @@ def test_work_to_dict_maps_an_arxiv_work():
     assert paper["cited_by"] == 7
 
 
+def test_arxiv_copy_wins_over_a_publisher_pdf_url():
+    """Publisher OA links 403 for us; the arXiv copy is the one that downloads."""
+    work = dict(
+        WORK,
+        best_oa_location={
+            "pdf_url": "https://doi.org/10.3390/telecom7030073",
+            "landing_page_url": "https://doi.org/10.3390/telecom7030073",
+        },
+    )
+    assert openalex.work_to_dict(work)["pdf_url"] == "https://arxiv.org/pdf/2401.12345"
+
+    # without an arXiv location there is nothing better to fall back to
+    no_arxiv = dict(
+        WORK,
+        primary_location=None,
+        locations=[],
+        best_oa_location={"pdf_url": "https://example.org/paper.pdf"},
+    )
+    assert openalex.work_to_dict(no_arxiv)["pdf_url"] == "https://example.org/paper.pdf"
+
+
 def test_key_falls_back_to_doi_then_openalex_id():
     no_arxiv = dict(WORK, primary_location=None, best_oa_location=None, open_access={}, locations=[])
     assert openalex.work_to_dict(no_arxiv)["arxiv_id"] == "doi:10.1145/1234"

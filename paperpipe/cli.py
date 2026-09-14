@@ -101,7 +101,16 @@ def cmd_fetch(args) -> int:
     session = _session()
     try:
         papers = _discover(args, session)
-        print(f"{args.source}: {len(papers)} paper(s) for query {args.query!r}")
+        unique, seen = [], set()
+        for paper in papers:
+            if paper["arxiv_id"] in seen:
+                continue
+            seen.add(paper["arxiv_id"])
+            unique.append(paper)
+        dropped = len(papers) - len(unique)
+        papers = unique
+        suffix = f" ({dropped} duplicate key(s) dropped)" if dropped else ""
+        print(f"{args.source}: {len(papers)} paper(s) for query {args.query!r}{suffix}")
         for paper in papers:
             paper["fetched_at"] = _now()
         db.upsert_papers(conn, papers)
@@ -139,6 +148,52 @@ def cmd_fetch(args) -> int:
         return 1
     finally:
         conn.close()
+
+
+def cmd_download(args) -> int:
+    """Fill in PDFs for papers already stored in the database.
+
+    Re-running ``fetch`` only covers whatever discovery returns *this* time, which
+    on a shifting relevance ranking can quietly leave stored papers without files.
+    This stage works from the database instead, so a corpus can be completed or
+    repaired after a host-level download failure.
+    """
+    conn, paths = _open(args)
+    session = _session()
+    if args.id:
+        rows = [row for row in (db.get_paper(conn, paper_id) for paper_id in args.id) if row]
+    else:
+        rows = db.papers_missing(conn, "pdf")
+    if args.url and len(rows) != 1:
+        print("--url needs exactly one --id", file=sys.stderr)
+        conn.close()
+        return 2
+
+    done = failed = skipped = 0
+    for row in rows:
+        url = args.url or row.get("pdf_url")
+        if not url:
+            skipped += 1
+            print(f"  skip {row['arxiv_id']}: no stored PDF url")
+            continue
+        try:
+            info = fetch.download_pdf(
+                row["arxiv_id"],
+                paths["pdfs"],
+                session=session,
+                url=url,
+                delay=args.delay,
+                force=args.force,
+            )
+            db.update_pdf(conn, row["arxiv_id"], info)
+            done += 1
+            print(f"  pdf  {row['arxiv_id']}  {info['bytes']:,} B")
+        except fetch.FetchError as exc:
+            failed += 1
+            print(f"  FAIL {row['arxiv_id']}: {exc}", file=sys.stderr)
+    print(f"downloaded {done}, skipped {skipped}, failed {failed}")
+    conn.close()
+    return 0 if failed == 0 else 1
 
 
 def cmd_extract(args) -> int:
@@ -298,6 +353,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_extract = sub.add_parser("extract", parents=[common], help="extract text for stored PDFs")
     p_extract.add_argument("--id", action="append", help="limit to specific arXiv ids")
     p_extract.set_defaults(func=cmd_extract)
+
+    p_download = sub.add_parser("download", parents=[common],
+                                help="download PDFs for stored papers that lack them")
+    p_download.add_argument("--id", action="append", help="limit to specific paper keys")
+    p_download.add_argument("--url", help="explicit PDF url; needs exactly one --id")
+    p_download.add_argument("--delay", type=float, default=config.DEFAULT_DELAY)
+    p_download.add_argument("--force", action="store_true", help="re-download existing PDFs")
+    p_download.set_defaults(func=cmd_download)
 
     p_index = sub.add_parser("index", parents=[common], help="regenerate the derived JSON index")
     p_index.add_argument("--check", action="store_true", help="verify index matches the DB")
