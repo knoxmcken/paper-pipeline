@@ -98,4 +98,33 @@ def test_fetch_drops_duplicate_discovery_keys(tmp_path, monkeypatch, capsys):
 
     conn = db.connect(tmp_path / "papers.db")
     assert db.stats(conn)["papers"] == 2
-    conn.close()
+
+
+def test_fetch_runs_unpaywall_enrichment_before_storing(tmp_path, monkeypatch, capsys):
+    """A paywalled discovery result with a DOI gets a shot at an OA copy first."""
+    discovered = [make_paper(doi="10.1/x", pdf_url=None)]
+    monkeypatch.setattr(cli, "_discover", lambda args, session: discovered)
+
+    def fake_enrich(papers, **kwargs):
+        papers[0]["pdf_url"] = "https://example.org/oa.pdf"
+        return 1
+
+    monkeypatch.setattr(cli.unpaywall, "enrich_missing_pdfs", fake_enrich)
+
+    assert cli.cmd_fetch(_args(tmp_path, "fetch", "-q", "x", "--no-download")) == 0
+    assert "unpaywall: resolved 1" in capsys.readouterr().out
+
+    conn = db.connect(tmp_path / "papers.db")
+    assert db.get_paper(conn, "2401.00001")["pdf_url"] == "https://example.org/oa.pdf"
+
+
+def test_fetch_no_unpaywall_flag_skips_enrichment(tmp_path, monkeypatch):
+    discovered = [make_paper(doi="10.1/x", pdf_url=None)]
+    monkeypatch.setattr(cli, "_discover", lambda args, session: discovered)
+    monkeypatch.setattr(
+        cli.unpaywall, "enrich_missing_pdfs",
+        lambda *a, **k: pytest.fail("should not be called"),
+    )
+
+    argv = ("fetch", "-q", "x", "--no-download", "--no-unpaywall")
+    assert cli.cmd_fetch(_args(tmp_path, *argv)) == 0

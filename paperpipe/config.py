@@ -13,6 +13,13 @@ DEFAULT_DATA_DIR = Path(os.environ.get("PAPERPIPE_DATA", "data"))
 ARXIV_API = os.environ.get("PAPERPIPE_ARXIV_API", "https://export.arxiv.org/api/query")
 ARXIV_RSS = os.environ.get("PAPERPIPE_ARXIV_RSS", "https://rss.arxiv.org/rss/{category}")
 OPENALEX_API = os.environ.get("PAPERPIPE_OPENALEX_API", "https://api.openalex.org/works")
+CROSSREF_API = os.environ.get("PAPERPIPE_CROSSREF_API", "https://api.crossref.org/works")
+SEMANTIC_SCHOLAR_API = os.environ.get(
+    "PAPERPIPE_S2_API", "https://api.semanticscholar.org/graph/v1/paper/search"
+)
+# Optional: raises the unauthenticated rate limit if the caller has a key.
+S2_API_KEY = os.environ.get("PAPERPIPE_S2_API_KEY")
+UNPAYWALL_API = os.environ.get("PAPERPIPE_UNPAYWALL_API", "https://api.unpaywall.org/v2/{doi}")
 
 # OpenAlex asks for a contact address so it can put you in the polite pool.
 MAILTO = os.environ.get("PAPERPIPE_MAILTO", "knoxmcken@gmail.com")

@@ -11,7 +11,21 @@ from typing import Dict, List
 
 import requests
 
-from . import __version__, arxiv, config, db, export, extract, fetch, index, openalex, reconcile
+from . import (
+    __version__,
+    arxiv,
+    config,
+    crossref,
+    db,
+    export,
+    extract,
+    fetch,
+    index,
+    openalex,
+    reconcile,
+    semanticscholar,
+    unpaywall,
+)
 
 STAGES = ("fetch", "download", "extract", "index", "export")
 
@@ -70,6 +84,21 @@ def _discover(args, session) -> List[Dict[str, object]]:
             arxiv_only=getattr(args, "arxiv_only", False),
             search_field=getattr(args, "search_field", "default"),
         )
+    if source == "crossref":
+        return crossref.search(
+            args.query,
+            max_results=args.max,
+            session=session,
+            delay=args.delay,
+            mailto=getattr(args, "mailto", None),
+        )
+    if source == "semanticscholar":
+        return semanticscholar.search(
+            args.query,
+            max_results=args.max,
+            session=session,
+            delay=args.delay,
+        )
     return arxiv.search(
         args.query,
         max_results=args.max,
@@ -84,7 +113,8 @@ def cmd_search(args) -> int:
     session = _session()
     try:
         results = _discover(args, session)
-    except (arxiv.ArxivError, openalex.OpenAlexError) as exc:
+    except (arxiv.ArxivError, openalex.OpenAlexError, crossref.CrossrefError,
+            semanticscholar.SemanticScholarError) as exc:
         print(f"search failed: {exc}", file=sys.stderr)
         return 1
     for paper in results:
@@ -111,6 +141,12 @@ def cmd_fetch(args) -> int:
         papers = unique
         suffix = f" ({dropped} duplicate key(s) dropped)" if dropped else ""
         print(f"{args.source}: {len(papers)} paper(s) for query {args.query!r}{suffix}")
+        if not getattr(args, "no_unpaywall", False):
+            filled = unpaywall.enrich_missing_pdfs(
+                papers, session=session, mailto=getattr(args, "mailto", None), delay=args.delay
+            )
+            if filled:
+                print(f"  unpaywall: resolved {filled} open-access pdf url(s)")
         for paper in papers:
             paper["fetched_at"] = _now()
         db.upsert_papers(conn, papers)
@@ -142,7 +178,8 @@ def cmd_fetch(args) -> int:
         db.finish_run(conn, run_id, True, message, _now())
         print(message)
         return 0
-    except (arxiv.ArxivError, openalex.OpenAlexError) as exc:  # noqa: BLE001
+    except (arxiv.ArxivError, openalex.OpenAlexError, crossref.CrossrefError,
+            semanticscholar.SemanticScholarError) as exc:  # noqa: BLE001
         db.finish_run(conn, run_id, False, str(exc), _now())
         print(f"fetch failed: {exc}", file=sys.stderr)
         return 1
@@ -379,11 +416,16 @@ def build_parser() -> argparse.ArgumentParser:
                             "keyword filter when --source rss")
         p.add_argument("-n", "--max", type=int, default=config.DEFAULT_MAX)
         p.add_argument("--category", help="arXiv category filter, e.g. cs.CL")
-        p.add_argument("--source", default="api", choices=["api", "rss", "openalex"],
-                       help="api = arXiv search endpoint; rss = newest arXiv announcements "
-                            "per category; openalex = topical scholarly search")
+        p.add_argument(
+            "--source", default="api",
+            choices=["api", "rss", "openalex", "crossref", "semanticscholar"],
+            help="api = arXiv search endpoint; rss = newest arXiv announcements per "
+                 "category; openalex = topical scholarly search; crossref = DOI/venue "
+                 "metadata for publisher-registered work; semanticscholar = metadata "
+                 "plus citation counts",
+        )
         p.add_argument("--mailto", default=None,
-                       help="contact address for the OpenAlex polite pool")
+                       help="contact address for the OpenAlex/Crossref/Unpaywall polite pool")
         p.add_argument("--arxiv-only", action="store_true",
                        help="openalex: keep only works with an arXiv copy, i.e. ones "
                             "whose full text is actually downloadable")
@@ -395,6 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--delay", type=float, default=config.DEFAULT_DELAY,
                        help="seconds between requests (arXiv asks for >=3)")
         p.add_argument("--no-download", action="store_true")
+        p.add_argument("--no-unpaywall", action="store_true",
+                       help="skip the Unpaywall lookup for papers with a DOI but no "
+                            "known open-access PDF")
         p.add_argument("--force", action="store_true", help="re-download existing PDFs")
 
     p_search = sub.add_parser("search", parents=[common], help="query arXiv without storing anything")

@@ -128,23 +128,40 @@ Notes:
 
 ## Discovery sources
 
-Three, selected with `--source`:
+Five, selected with `--source`:
 
 | Source | Endpoint | Semantics |
 |---|---|---|
 | `api` (default) | `export.arxiv.org/api/query` | real search: relevance/date ranking, huge recall, field queries |
 | `rss` | `rss.arxiv.org/rss/<category>` | newest announcement batch per category; `-q` filters client-side |
 | `openalex` | `api.openalex.org/works` | topical scholarly search across all publishers, with open-access PDF links |
+| `crossref` | `api.crossref.org/works` | DOI/venue metadata for publisher-registered work; no OA PDF links of its own |
+| `semanticscholar` | `api.semanticscholar.org/graph/v1/paper/search` | metadata plus citation counts, a ranking signal the others don't carry |
 
 Fallbacks exist because arXiv throttles by IP, and shared/cloud egress addresses get hit
 hard (`429 Rate exceeded.`, and sometimes read timeouts). PDF fetches come from
 `arxiv.org/pdf/...`, a different service that keeps working while the API is throttled, so
-an already-known paper list still downloads fine. `openalex` is the source that stays up
-when both arXiv search routes fail.
+an already-known paper list still downloads fine. `openalex`, `crossref` and
+`semanticscholar` stay up when both arXiv search routes fail; `crossref` and
+`semanticscholar` are also the way to catalogue paywalled work (Elsevier, IEEE, MDPI,
+Springer, ...) whose PDF can't be downloaded at all - those become metadata-only rows,
+marked as such in `paperpipe show`/exports.
 
-Each paper records its `source` column, so a corpus can mix routes and still be auditable.
-The paper key (`arxiv_id` in the schema) is the arXiv id when the work has an arXiv
-location, otherwise `doi:<doi>`, otherwise the OpenAlex work id.
+Each source normalises to the same paper dict and records its `source` column, so a
+corpus can mix routes and still be auditable. The paper key (`arxiv_id` in the schema) is
+the arXiv id when the work has an arXiv location, otherwise `doi:<doi>`, otherwise a
+source-specific id (the OpenAlex work id, the Semantic Scholar paper id, or the item's
+plain URL for Crossref).
+
+### Filling gaps with Unpaywall
+
+Every `fetch`/`run` also runs an Unpaywall lookup (`api.unpaywall.org`) for any
+discovered paper that has a DOI but no open-access PDF link from its own source -
+useful after a `crossref` search, which never returns one itself. It is a last resort,
+not a preferred source: a `pdf_url` already known from arXiv/OpenAlex/Crossref/Semantic
+Scholar is never replaced. Skip it with `--no-unpaywall`. `--mailto` sets the contact
+address sent to OpenAlex, Crossref and Unpaywall's polite pools (falls back to
+`PAPERPIPE_MAILTO`/the repo's contact address).
 
 ## Query syntax
 
@@ -172,7 +189,6 @@ are absent.
 
 ## Roadmap
 
-- DOI/Crossref and Semantic Scholar enrichment for published versions
 - Full TOC from the PDF outline (`mutool show outline`) where one exists
 - Optional embeddings + duplicate detection
 

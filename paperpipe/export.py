@@ -45,6 +45,8 @@ def build_markdown(conn, title: str = "Paper Index", category: bool = True) -> s
             lines.append(f"- **arXiv:** [{paper.get('arxiv_id')}]({paper.get('abs_url')})")
             if paper.get("journal_ref"):
                 lines.append(f"- **Journal:** {paper['journal_ref']}")
+            if not paper.get("pdf_path"):
+                lines.append("- **Access:** metadata only — no open-access PDF found")
             if paper.get("pages") or paper.get("page_count"):
                 lines.append(f"- **Pages:** {paper.get('page_count')}")
             headings = paper.get("headings") or []
@@ -75,7 +77,10 @@ def build_csv(conn, path: Path) -> Path:
     fields = ["arxiv_id", "title", "primary_category", "published", "page_count", "abs_url", "pdf_path"]
     with open(path, "w", newline="", encoding="utf-8") as fh:
         writer = csv.writer(fh)
-        writer.writerow(fields + ["authors"])
+        writer.writerow(fields + ["authors", "metadata_only"])
         for paper in papers:
-            writer.writerow([paper.get(f) for f in fields] + ["; ".join(paper.get("authors") or [])])
+            writer.writerow(
+                [paper.get(f) for f in fields]
+                + ["; ".join(paper.get("authors") or []), not paper.get("pdf_path")]
+            )
     return path
