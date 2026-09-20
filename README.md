@@ -1,5 +1,7 @@
 # paper-pipeline
 
+[![CI](https://github.com/knoxmcken/paper-pipeline/actions/workflows/ci.yml/badge.svg)](https://github.com/knoxmcken/paper-pipeline/actions/workflows/ci.yml)
+
 A small, dependency-light pipeline for turning a research topic into a queryable local
 corpus of papers.
 
@@ -52,6 +54,11 @@ paperpipe extract                                       # everything missing tex
 paperpipe index                                         # regenerate data/index.json
 paperpipe export --format all                           # data/exports/papers.{md,csv}
 
+# fill in PDFs for papers already stored in the DB (not just what the last search returned)
+paperpipe download                                      # every stored paper missing a PDF, using its stored url
+paperpipe download --id 2401.00001 --url https://arxiv.org/pdf/2401.00001v2  # pin one paper to an explicit url
+paperpipe download --force --id 2401.00001              # re-download even if a PDF is already on disk
+
 # inspect
 paperpipe stats
 paperpipe show "attention"
@@ -62,6 +69,28 @@ paperpipe index --check                                 # is index.json in sync 
 paperpipe reconcile                                     # dry run: lists dead/paywalled links, missing files, key collisions
 paperpipe reconcile --fix                                # re-resolves stale links (preferring the arXiv copy) and re-downloads
 ```
+
+### The `download` stage
+
+`fetch`/`run` only download whatever discovery returns *this* time. On a shifting
+relevance ranking, or after a host-level failure partway through a run, that can
+quietly leave stored papers without a PDF. `download` works from the database
+instead of a fresh search, so it can complete or repair a corpus:
+
+```bash
+paperpipe download                       # every stored paper missing a PDF, via its stored url
+paperpipe download --id 2401.00001       # just one paper, by its stored key
+paperpipe download --id 2401.00001 --url https://arxiv.org/pdf/2401.00001v2
+                                          # override the stored url (needs exactly one --id);
+                                          # use this to pin a specific version or route around
+                                          # a dead/paywalled link that reconcile flagged
+paperpipe download --force               # re-fetch even where a PDF already exists on disk
+```
+
+Reach for it after: a partial `fetch` (host died, network dropped mid-run), a
+`reconcile` report that names a `dead_link`/`missing_file` you'd rather fix by hand than
+auto-repair, or when you already know a better URL (a newer arXiv version, a mirror)
+than whatever discovery stored.
 
 ## Web UI
 
@@ -184,6 +213,37 @@ paperpipe run -q 'abs:transformer' -n 20 --sort date
 With `--source rss` there is no server-side search, so `-q` is a plain keyword
 filter: every whitespace-separated term must appear in the title, abstract or
 author list. Pass `-q ""` to keep the whole batch.
+
+## Cookbook: building the "AI agents in cybersecurity" corpus
+
+The 25-paper corpus checked in during early development was built with the exact
+commands below - a useful copy-pasteable recipe for a topic-focused corpus grown from
+multiple seed queries, with a manual pin for one stale link.
+
+```bash
+# 1. harvest from several angles in one batch; -n caps the TOTAL unique corpus size,
+#    not each query, and an overlap between seeds collapses to one row
+paperpipe run \
+  -q "AI agents in cybersecurity" \
+  -q "LLM agents security" \
+  -q "autonomous agents penetration testing" \
+  --source openalex --arxiv-only -n 25
+
+# 2. spot-check for drift right away, rather than discovering it later
+paperpipe reconcile
+
+# 3. one entry came back with a dead publisher redirect; reconcile named it, so pin
+#    the known-good arXiv copy by hand instead of trusting an automatic re-resolve
+paperpipe download --id 2401.00001 --url https://arxiv.org/pdf/2401.00001v2 --force
+
+# 4. everything is in the DB now; regenerate the derived artefacts
+paperpipe extract
+paperpipe index
+paperpipe export --format all
+
+# 5. sanity check the final shape
+paperpipe stats
+```
 
 ## Tests
 
