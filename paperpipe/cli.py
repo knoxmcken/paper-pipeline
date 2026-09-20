@@ -60,6 +60,27 @@ def _session() -> requests.Session:
     return sess
 
 
+def _resolve_queries(args) -> List[str]:
+    """Collect the query list for a discovery run from ``--query``/``--queries-file``.
+
+    ``--query`` is repeatable, and a ``--queries-file`` (one query per line, ``#``
+    comments and blank lines ignored) can supply additional seeds or replace the
+    flag entirely. Order is preserved and duplicates are kept (a repeated seed just
+    re-runs discovery, which is harmless since results dedupe by paper key).
+    """
+    queries: List[str] = list(getattr(args, "query", None) or [])
+    queries_file = getattr(args, "queries_file", None)
+    if queries_file:
+        text = Path(queries_file).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            line = line.strip()
+            if line and not line.startswith("#"):
+                queries.append(line)
+    if not queries:
+        raise arxiv.ArxivError("need at least one --query or --queries-file")
+    return queries
+
+
 def _discover(args, session) -> List[Dict[str, object]]:
     """Run the selected discovery source and return normalised paper dicts."""
     source = getattr(args, "source", "api")
@@ -112,7 +133,21 @@ def _discover(args, session) -> List[Dict[str, object]]:
 def cmd_search(args) -> int:
     session = _session()
     try:
-        results = _discover(args, session)
+        queries = _resolve_queries(args)
+    except arxiv.ArxivError as exc:
+        print(f"search failed: {exc}", file=sys.stderr)
+        return 1
+    results: List[Dict[str, object]] = []
+    seen = set()
+    try:
+        for q in queries:
+            qargs = argparse.Namespace(**vars(args))
+            qargs.query = q
+            for paper in _discover(qargs, session):
+                if paper["arxiv_id"] in seen:
+                    continue
+                seen.add(paper["arxiv_id"])
+                results.append(paper)
     except (arxiv.ArxivError, openalex.OpenAlexError, crossref.CrossrefError,
             semanticscholar.SemanticScholarError) as exc:
         print(f"search failed: {exc}", file=sys.stderr)
@@ -130,17 +165,37 @@ def cmd_fetch(args) -> int:
     run_id = db.start_run(conn, "fetch", json.dumps(vars(args), default=str), _now())
     session = _session()
     try:
-        papers = _discover(args, session)
-        unique, seen = [], set()
-        for paper in papers:
-            if paper["arxiv_id"] in seen:
+        queries = _resolve_queries(args)
+        corpus_max = args.max
+        papers: List[Dict[str, object]] = []
+        seen = set()
+        for q in queries:
+            if corpus_max is not None and len(papers) >= corpus_max:
+                print(f"  query {q!r}: skipped (corpus --max {corpus_max} already reached)")
                 continue
-            seen.add(paper["arxiv_id"])
-            unique.append(paper)
-        dropped = len(papers) - len(unique)
-        papers = unique
-        suffix = f" ({dropped} duplicate key(s) dropped)" if dropped else ""
-        print(f"{args.source}: {len(papers)} paper(s) for query {args.query!r}{suffix}")
+            qargs = argparse.Namespace(**vars(args))
+            qargs.query = q
+            if corpus_max is not None:
+                qargs.max = corpus_max - len(papers)
+            try:
+                found = _discover(qargs, session)
+            except (arxiv.ArxivError, openalex.OpenAlexError, crossref.CrossrefError,
+                    semanticscholar.SemanticScholarError) as exc:
+                print(f"  query {q!r}: FAILED ({exc})", file=sys.stderr)
+                continue
+            new = 0
+            for paper in found:
+                if paper["arxiv_id"] in seen:
+                    continue
+                seen.add(paper["arxiv_id"])
+                papers.append(paper)
+                new += 1
+                if corpus_max is not None and len(papers) >= corpus_max:
+                    break
+            dropped = len(found) - new
+            suffix = f" ({dropped} duplicate key(s) dropped)" if dropped else ""
+            print(f"  query {q!r}: {len(found)} result(s), {new} new{suffix}")
+        print(f"{args.source}: {len(papers)} unique paper(s) across {len(queries)} query/queries")
         if not getattr(args, "no_unpaywall", False):
             filled = unpaywall.enrich_missing_pdfs(
                 papers, session=session, mailto=getattr(args, "mailto", None), delay=args.delay
@@ -411,10 +466,16 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--data-dir", default=argparse.SUPPRESS)
 
     def add_fetch_flags(p):
-        p.add_argument("-q", "--query", required=True,
+        p.add_argument("-q", "--query", action="append", default=None,
                        help="search terms, an arXiv field query, or a client-side "
-                            "keyword filter when --source rss")
-        p.add_argument("-n", "--max", type=int, default=config.DEFAULT_MAX)
+                            "keyword filter when --source rss; repeat -q to harvest "
+                            "several seed queries into one corpus")
+        p.add_argument("--queries-file",
+                       help="file with one query per line (# comments and blank lines "
+                            "ignored); combined with any -q/--query given")
+        p.add_argument("-n", "--max", type=int, default=config.DEFAULT_MAX,
+                       help="cap on unique papers across the whole batch of queries, "
+                            "not per query (default: %(default)s)")
         p.add_argument("--category", help="arXiv category filter, e.g. cs.CL")
         p.add_argument(
             "--source", default="api",

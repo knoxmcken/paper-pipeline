@@ -37,6 +37,14 @@ paperpipe run -q "retrieval" --source rss --category cs.CL,cs.LG -n 10
 # or search across publishers with open-access PDF links
 paperpipe run -q "LLM agents in cybersecurity" --source openalex -n 30
 
+# build one corpus from several seed queries in a single pass; -n caps the
+# TOTAL unique papers across the whole batch, not each query, and a paper
+# returned by more than one seed collapses to a single row
+paperpipe run -q "llm agents" -q "tool use" -q "retrieval augmented generation" -n 60
+
+# or keep the seeds in a file, one query per line (# comments, blank lines ignored)
+paperpipe run --queries-file seeds.txt -n 60
+
 # step by step
 paperpipe search -q "graph neural networks" -n 10     # query only, stores nothing
 paperpipe fetch  -q "graph neural networks" -n 10     # metadata + PDFs into data/

@@ -8,7 +8,13 @@ def test_parser_wires_every_subcommand():
     args = parser.parse_args(["run", "-q", "llm agents", "-n", "5", "--data-dir", "/tmp/x"])
     assert args.command == "run"
     assert args.func is cli.cmd_run
-    assert args.query == "llm agents" and args.max == 5 and args.data_dir == "/tmp/x"
+    assert args.query == ["llm agents"] and args.max == 5 and args.data_dir == "/tmp/x"
+
+
+def test_query_is_repeatable_and_order_preserving():
+    parser = cli.build_parser()
+    args = parser.parse_args(["fetch", "-q", "a", "-q", "b", "-q", "c"])
+    assert args.query == ["a", "b", "c"]
     for name in ("search", "fetch", "extract", "index", "export", "stats", "show"):
         parsed = parser.parse_args([name] + (["-q", "x"] if name in ("search", "fetch") else []))
         assert parsed.command == name
