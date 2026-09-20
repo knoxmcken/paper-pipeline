@@ -190,6 +190,25 @@ the arXiv id when the work has an arXiv location, otherwise `doi:<doi>`, otherwi
 source-specific id (the OpenAlex work id, the Semantic Scholar paper id, or the item's
 plain URL for Crossref).
 
+### Caching and rate limiting
+
+Every `fetch`/`run` shares one on-disk response cache and one rate limiter across
+every request in that run, whatever source(s) issued them:
+
+- **Cache.** Identical requests (same source, url and params) within `--cache-ttl`
+  seconds (default 3600) are replayed from `<data-dir>/cache/` with no network call at
+  all - handy for a re-run seed query, an overlapping batch seed, or an interrupted
+  harvest picked back up. `--no-cache` bypasses both reads and writes for a run. The
+  summary line reports `cache: N hit(s), M miss(es)` so a cache hit is never a
+  mystery. Only successful (`200`) responses are cached, so a transient error is
+  never replayed for the TTL's duration. `search` never writes to the cache, since it
+  stores nothing else on disk either.
+- **Rate limiter.** `--delay` now also sets a limiter shared by every source hit in
+  the run (not just each source's own internal pacing), so a multi-seed batch (see
+  `--queries-file` above) can't burst past the configured rate just because several
+  queries ran back-to-back. Each source's own 429/backoff handling is unchanged; the
+  limiter only paces the *first* attempt of each request, not error retries.
+
 ### Filling gaps with Unpaywall
 
 Every `fetch`/`run` also runs an Unpaywall lookup (`api.unpaywall.org`) for any

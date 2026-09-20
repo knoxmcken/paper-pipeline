@@ -16,7 +16,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from . import config
+from . import config, netcache
 
 _TAG_RE = re.compile(r"<[^>]+>")
 
@@ -35,11 +35,20 @@ def _retry_after(resp: requests.Response) -> Optional[float]:
         return None
 
 
-def _get(session: requests.Session, params: dict, attempts: int = 4) -> dict:
+def _get(
+    session: requests.Session,
+    params: dict,
+    attempts: int = 4,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
+) -> dict:
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
-            resp = session.get(config.CROSSREF_API, params=params, timeout=45)
+            resp = netcache.cached_get(
+                session, config.CROSSREF_API, params, source="crossref",
+                cache=cache, limiter=limiter, timeout=45,
+            )
             if resp.status_code == 200:
                 return resp.json()
             if resp.status_code == 429:
@@ -127,6 +136,8 @@ def search(
     mailto: Optional[str] = None,
     page_size: int = 100,
     attempts: int = 4,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> List[Dict[str, object]]:
     """Bibliographic search with offset paging."""
     sess = session or requests.Session()
@@ -143,7 +154,7 @@ def search(
     offset = 0
     while len(collected) < max_results:
         params = dict(base_params, offset=str(offset))
-        payload = _get(sess, params, attempts=attempts)
+        payload = _get(sess, params, attempts=attempts, cache=cache, limiter=limiter)
         items = (payload.get("message") or {}).get("items") or []
         if not items:
             break
@@ -154,5 +165,6 @@ def search(
         offset += len(items)
         if len(collected) >= max_results or len(items) < rows:
             break
-        time.sleep(delay)
+        if limiter is None:
+            time.sleep(delay)
     return collected[:max_results]

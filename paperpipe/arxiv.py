@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from . import config
+from . import config, netcache
 
 ATOM = "{http://www.w3.org/2005/Atom}"
 ARXIV = "{http://arxiv.org/schemas/atom}"
@@ -121,8 +121,15 @@ def search(
     delay: float = config.DEFAULT_DELAY,
     category: Optional[str] = None,
     page_size: int = 100,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> List[Dict[str, object]]:
-    """Query the arXiv API, paging until ``max_results`` or exhaustion."""
+    """Query the arXiv API, paging until ``max_results`` or exhaustion.
+
+    ``cache``/``limiter`` are optional and shared across sources when the caller
+    passes the same instance to more than one of them; omitted, behaviour is
+    identical to before (``delay``-paced, uncached).
+    """
     sess = session or requests.Session()
     sess.headers.setdefault("User-Agent", config.USER_AGENT)
     order = "submittedDate" if sort in ("date", "submittedDate") else "relevance"
@@ -139,7 +146,7 @@ def search(
             "sortBy": order,
             "sortOrder": "descending",
         }
-        resp = _get(sess, params)
+        resp = _get(sess, params, cache=cache, limiter=limiter)
         page = parse_feed(resp.text)
         if not page:
             break
@@ -147,7 +154,7 @@ def search(
         start += len(page)
         if len(page) < want:
             break
-        if len(results) < max_results:
+        if len(results) < max_results and limiter is None:
             time.sleep(delay)
     return results[:max_results]
 
@@ -169,18 +176,23 @@ def _get(
     base_backoff: float = 10.0,
     max_backoff: float = 120.0,
     url: Optional[str] = None,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> requests.Response:
     """GET the API, backing off hard on 429.
 
     arXiv throttles per IP (``429`` + a 14-byte ``Rate exceeded.`` body) and does
     not always send ``Retry-After``, so retries use exponential backoff that can
-    outlive a single burst budget instead of hammering the endpoint.
+    outlive a single burst budget instead of hammering the endpoint. A cache hit
+    (when ``cache`` is given) skips all of this and the network entirely.
     """
     target = url or config.ARXIV_API
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
-            resp = session.get(target, params=params, timeout=30)
+            resp = netcache.cached_get(
+                session, target, params, source="arxiv", cache=cache, limiter=limiter, timeout=30
+            )
             if resp.status_code == 200:
                 return resp
             if resp.status_code == 429:
@@ -283,6 +295,8 @@ def latest(
     max_results: int = config.DEFAULT_MAX,
     session: Optional[requests.Session] = None,
     delay: float = config.DEFAULT_DELAY,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> List[Dict[str, object]]:
     """Newest announcements from the per-category RSS feeds.
 
@@ -295,9 +309,9 @@ def latest(
     collected: List[Dict[str, object]] = []
     seen = set()
     for index, category in enumerate(categories):
-        if index:
+        if index and limiter is None:
             time.sleep(delay)
-        resp = _get(sess, {}, url=rss_url(category))
+        resp = _get(sess, {}, url=rss_url(category), cache=cache, limiter=limiter)
         for paper in parse_rss(resp.text):
             if not paper["arxiv_id"] or paper["arxiv_id"] in seen:
                 continue

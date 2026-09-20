@@ -17,7 +17,7 @@ from urllib.parse import quote
 
 import requests
 
-from . import config
+from . import config, netcache
 
 ARXIV_URL_MARKERS = ("arxiv.org/abs/", "arxiv.org/pdf/")
 
@@ -26,11 +26,20 @@ class OpenAlexError(RuntimeError):
     """Raised when OpenAlex cannot be queried or parsed."""
 
 
-def _get(session: requests.Session, params: dict, attempts: int = 4) -> dict:
+def _get(
+    session: requests.Session,
+    params: dict,
+    attempts: int = 4,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
+) -> dict:
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
-            resp = session.get(config.OPENALEX_API, params=params, timeout=45)
+            resp = netcache.cached_get(
+                session, config.OPENALEX_API, params, source="openalex",
+                cache=cache, limiter=limiter, timeout=45,
+            )
             if resp.status_code == 200:
                 return resp.json()
             last = OpenAlexError(f"OpenAlex returned HTTP {resp.status_code}")
@@ -138,6 +147,8 @@ def search(
     arxiv_only: bool = False,
     search_field: str = "default",
     attempts: int = 4,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> List[Dict[str, object]]:
     """Topical search with cursor paging.
 
@@ -174,7 +185,7 @@ def search(
     cursor = "*"
     while len(collected) < max_results and cursor:
         params = dict(base_params, cursor=cursor)
-        payload = _get(sess, params, attempts=attempts)
+        payload = _get(sess, params, attempts=attempts, cache=cache, limiter=limiter)
         results = payload.get("results") or []
         if not results:
             break
@@ -185,7 +196,7 @@ def search(
             if len(collected) >= max_results:
                 break
         cursor = (payload.get("meta") or {}).get("next_cursor")
-        if len(collected) < max_results and cursor:
+        if len(collected) < max_results and cursor and limiter is None:
             time.sleep(delay)
     return collected[:max_results]
 

@@ -15,7 +15,7 @@ def _stub_discover_by_query(monkeypatch, table):
     """Route ``cli._discover`` to ``table[qargs.query]``, recording call order."""
     calls = []
 
-    def fake(qargs, session):
+    def fake(qargs, session, **_kw):
         calls.append(qargs.query)
         return list(table.get(qargs.query, []))
 
@@ -88,7 +88,7 @@ def test_max_is_enforced_across_the_whole_batch(tmp_path, monkeypatch, capsys):
 
 
 def test_a_failing_seed_is_reported_but_does_not_abort_the_batch(tmp_path, monkeypatch, capsys):
-    def fake(qargs, session):
+    def fake(qargs, session, **_kw):
         if qargs.query == "bad":
             raise cli.arxiv.ArxivError("boom")
         return [make_paper(arxiv_id="2401.00001")]
@@ -119,3 +119,62 @@ def test_search_also_accepts_repeated_query_and_dedupes(tmp_path, monkeypatch, c
     args = _args(tmp_path, "search", "-q", "a", "-q", "b")
     assert cli.cmd_search(args) == 0
     assert "2 result(s)" in capsys.readouterr().out
+
+
+def test_fetch_shares_one_cache_and_limiter_across_every_seed_query(tmp_path, monkeypatch):
+    """issue #5: one cache/limiter instance per run, not one per query."""
+    seen_cache_ids, seen_limiter_ids = [], []
+
+    def fake(qargs, session, cache=None, limiter=None):
+        seen_cache_ids.append(id(cache))
+        seen_limiter_ids.append(id(limiter))
+        return [make_paper(arxiv_id=f"2401.0000{len(seen_cache_ids)}")]
+
+    monkeypatch.setattr(cli, "_discover", fake)
+
+    args = _args(tmp_path, "fetch", "-q", "a", "-q", "b", "-q", "c", "--no-download")
+    assert cli.cmd_fetch(args) == 0
+
+    assert len(set(seen_cache_ids)) == 1
+    assert len(set(seen_limiter_ids)) == 1
+
+
+def test_no_cache_flag_disables_the_cache_but_keeps_the_limiter(tmp_path, monkeypatch):
+    captured = {}
+
+    def fake(qargs, session, cache=None, limiter=None):
+        captured["cache"] = cache
+        captured["limiter"] = limiter
+        return [make_paper()]
+
+    monkeypatch.setattr(cli, "_discover", fake)
+
+    args = _args(tmp_path, "fetch", "-q", "a", "--no-download", "--no-cache")
+    assert cli.cmd_fetch(args) == 0
+    assert captured["cache"] is None
+    assert captured["limiter"] is not None
+    assert not (tmp_path / "cache").exists()
+
+
+def test_fetch_reports_cache_hit_miss_counts(tmp_path, monkeypatch, capsys):
+    def fake(qargs, session, cache=None, limiter=None):
+        # simulate one hit and one miss for this run
+        cache.hits += 1
+        cache.misses += 1
+        return [make_paper()]
+
+    monkeypatch.setattr(cli, "_discover", fake)
+
+    args = _args(tmp_path, "fetch", "-q", "a", "--no-download")
+    assert cli.cmd_fetch(args) == 0
+    assert "cache: 1 hit(s), 1 miss(es)" in capsys.readouterr().out
+
+
+def test_search_never_touches_the_disk_cache(tmp_path, monkeypatch):
+    """search stores nothing on disk, including no cache files."""
+    table = {"a": [make_paper()]}
+    _stub_discover_by_query(monkeypatch, table)
+
+    args = _args(tmp_path, "search", "-q", "a")
+    assert cli.cmd_search(args) == 0
+    assert not (tmp_path / "cache").exists()

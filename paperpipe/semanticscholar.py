@@ -13,7 +13,7 @@ from typing import Dict, List, Optional
 
 import requests
 
-from . import config
+from . import config, netcache
 
 FIELDS = (
     "title,abstract,year,publicationDate,authors,venue,citationCount,"
@@ -35,13 +35,20 @@ def _retry_after(resp: requests.Response) -> Optional[float]:
         return None
 
 
-def _get(session: requests.Session, params: dict, attempts: int = 4) -> dict:
+def _get(
+    session: requests.Session,
+    params: dict,
+    attempts: int = 4,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
+) -> dict:
     headers = {"x-api-key": config.S2_API_KEY} if config.S2_API_KEY else {}
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
-            resp = session.get(
-                config.SEMANTIC_SCHOLAR_API, params=params, headers=headers, timeout=45
+            resp = netcache.cached_get(
+                session, config.SEMANTIC_SCHOLAR_API, params, source="semanticscholar",
+                cache=cache, limiter=limiter, headers=headers, timeout=45,
             )
             if resp.status_code == 200:
                 return resp.json()
@@ -110,6 +117,8 @@ def search(
     delay: float = config.DEFAULT_DELAY,
     page_size: int = 100,
     attempts: int = 4,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> List[Dict[str, object]]:
     """Keyword search with offset paging."""
     sess = session or requests.Session()
@@ -119,7 +128,7 @@ def search(
     offset = 0
     while len(collected) < max_results:
         params = {"query": query, "limit": str(limit), "offset": str(offset), "fields": FIELDS}
-        payload = _get(sess, params, attempts=attempts)
+        payload = _get(sess, params, attempts=attempts, cache=cache, limiter=limiter)
         items = payload.get("data") or []
         if not items:
             break
@@ -130,5 +139,6 @@ def search(
         offset += len(items)
         if len(collected) >= max_results or len(items) < limit:
             break
-        time.sleep(delay)
+        if limiter is None:
+            time.sleep(delay)
     return collected[:max_results]

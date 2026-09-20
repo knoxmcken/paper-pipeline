@@ -36,6 +36,10 @@ USER_AGENT = os.environ.get(
 DEFAULT_DELAY = 3.0
 DEFAULT_MAX = 50
 
+# On-disk response cache TTL: an hour is long enough to absorb a retried batch
+# or a re-run seed query, short enough that a corpus never looks frozen in time.
+DEFAULT_CACHE_TTL = float(os.environ.get("PAPERPIPE_CACHE_TTL", 3600))
+
 
 def db_path(data_dir: Path) -> Path:
     return Path(data_dir) / "papers.db"
@@ -55,6 +59,10 @@ def exports_dir(data_dir: Path) -> Path:
 
 def index_path(data_dir: Path) -> Path:
     return Path(data_dir) / "index.json"
+
+
+def cache_dir(data_dir: Path) -> Path:
+    return Path(data_dir) / "cache"
 
 
 def ensure_dirs(data_dir: Path) -> None:

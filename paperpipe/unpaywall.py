@@ -14,7 +14,7 @@ from typing import Dict, Iterable, Optional
 
 import requests
 
-from . import config
+from . import config, netcache
 
 
 class UnpaywallError(RuntimeError):
@@ -36,6 +36,8 @@ def lookup_pdf_url(
     session: Optional[requests.Session] = None,
     mailto: Optional[str] = None,
     attempts: int = 3,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> Optional[str]:
     """Return an open-access PDF url for ``doi``, or ``None`` if Unpaywall has none."""
     sess = session or requests.Session()
@@ -45,7 +47,9 @@ def lookup_pdf_url(
     last: Optional[Exception] = None
     for attempt in range(attempts):
         try:
-            resp = sess.get(url, params=params, timeout=30)
+            resp = netcache.cached_get(
+                sess, url, params, source="unpaywall", cache=cache, limiter=limiter, timeout=30
+            )
             if resp.status_code == 404:
                 return None  # Unpaywall has no record for this DOI
             if resp.status_code == 200:
@@ -71,6 +75,8 @@ def enrich_missing_pdfs(
     session: Optional[requests.Session] = None,
     mailto: Optional[str] = None,
     delay: float = config.DEFAULT_DELAY,
+    cache: Optional[netcache.ResponseCache] = None,
+    limiter: Optional[netcache.RateLimiter] = None,
 ) -> int:
     """Fill ``pdf_url`` for papers that have a DOI but no known OA copy.
 
@@ -83,10 +89,12 @@ def enrich_missing_pdfs(
     filled = 0
     candidates = [p for p in papers if p.get("doi") and not p.get("pdf_url")]
     for index, paper in enumerate(candidates):
-        if index:
+        if index and limiter is None:
             time.sleep(delay)
         try:
-            pdf_url = lookup_pdf_url(str(paper["doi"]), session=session, mailto=mailto)
+            pdf_url = lookup_pdf_url(
+                str(paper["doi"]), session=session, mailto=mailto, cache=cache, limiter=limiter
+            )
         except UnpaywallError:
             continue
         if pdf_url:

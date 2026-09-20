@@ -91,7 +91,7 @@ def test_fetch_drops_duplicate_discovery_keys(tmp_path, monkeypatch, capsys):
     """Two works can resolve to the same arXiv key (preprint + journal version)."""
     discovered = [make_paper(), make_paper(title="same key again"),
                   make_paper(arxiv_id="2401.00002", title="second")]
-    monkeypatch.setattr(cli, "_discover", lambda args, session: discovered)
+    monkeypatch.setattr(cli, "_discover", lambda args, session, **_kw: discovered)
 
     assert cli.cmd_fetch(_args(tmp_path, "fetch", "-q", "x", "--no-download")) == 0
     assert "duplicate key(s) dropped" in capsys.readouterr().out
@@ -103,7 +103,7 @@ def test_fetch_drops_duplicate_discovery_keys(tmp_path, monkeypatch, capsys):
 def test_fetch_runs_unpaywall_enrichment_before_storing(tmp_path, monkeypatch, capsys):
     """A paywalled discovery result with a DOI gets a shot at an OA copy first."""
     discovered = [make_paper(doi="10.1/x", pdf_url=None)]
-    monkeypatch.setattr(cli, "_discover", lambda args, session: discovered)
+    monkeypatch.setattr(cli, "_discover", lambda args, session, **_kw: discovered)
 
     def fake_enrich(papers, **kwargs):
         papers[0]["pdf_url"] = "https://example.org/oa.pdf"
@@ -120,7 +120,7 @@ def test_fetch_runs_unpaywall_enrichment_before_storing(tmp_path, monkeypatch, c
 
 def test_fetch_no_unpaywall_flag_skips_enrichment(tmp_path, monkeypatch):
     discovered = [make_paper(doi="10.1/x", pdf_url=None)]
-    monkeypatch.setattr(cli, "_discover", lambda args, session: discovered)
+    monkeypatch.setattr(cli, "_discover", lambda args, session, **_kw: discovered)
     monkeypatch.setattr(
         cli.unpaywall, "enrich_missing_pdfs",
         lambda *a, **k: pytest.fail("should not be called"),

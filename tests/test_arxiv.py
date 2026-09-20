@@ -191,3 +191,33 @@ def test_retry_after_header_is_parsed():
     assert arxiv._retry_after(FakeResponse(429, "", {"Retry-After": "30"})) == 30.0
     assert arxiv._retry_after(FakeResponse(429, "", {"Retry-After": "soon"})) is None
     assert arxiv._retry_after(FakeResponse(429)) is None
+
+
+def test_get_cache_hit_skips_the_network(tmp_path):
+    from paperpipe import netcache
+
+    session = FakeSession([FakeResponse(200, "<feed/>")])
+    cache = netcache.ResponseCache(tmp_path / "cache")
+
+    first = arxiv._get(session, {"search_query": "x"}, cache=cache)
+    second = arxiv._get(session, {"search_query": "x"}, cache=cache)
+
+    assert first.text == second.text == "<feed/>"
+    assert session.calls == 1  # the second call never touched the network
+    assert cache.hits == 1 and cache.misses == 1
+
+
+def test_search_shares_one_rate_limiter_across_pages_and_never_sleeps_directly(monkeypatch):
+    """When a limiter is supplied, search() must not also do its own time.sleep."""
+    from paperpipe import netcache
+
+    def fail_sleep(_s):
+        pytest.fail("search() should defer all pacing to the shared limiter")
+
+    monkeypatch.setattr(arxiv.time, "sleep", fail_sleep)
+    session = FakeSession([FakeResponse(200, FEED), FakeResponse(200, "<feed/>")])
+    waits = []
+    limiter = netcache.RateLimiter(0.0, clock=lambda: 0.0, sleep=waits.append)
+
+    arxiv.search("x", max_results=1, session=session, page_size=1, limiter=limiter)
+    assert session.calls == 1  # one page was enough for max_results=1, no pacing needed at all

@@ -7,7 +7,7 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import requests
 
@@ -21,6 +21,7 @@ from . import (
     extract,
     fetch,
     index,
+    netcache,
     openalex,
     reconcile,
     semanticscholar,
@@ -60,6 +61,23 @@ def _session() -> requests.Session:
     return sess
 
 
+def _net(args, allow_cache: bool = True):
+    """Build the response cache + rate limiter shared across sources for this run.
+
+    One ``RateLimiter`` paces every source hit by this invocation (not just each
+    source's own requests), and one ``ResponseCache`` is reused across every seed
+    query in a batch, so a repeated/overlapping seed never re-hits the network.
+    ``--no-cache`` (or ``allow_cache=False``, used by ``search`` which stores
+    nothing on disk) disables the cache but keeps the shared limiter.
+    """
+    limiter = netcache.RateLimiter(getattr(args, "delay", config.DEFAULT_DELAY))
+    if not allow_cache or getattr(args, "no_cache", False):
+        return None, limiter
+    ttl = getattr(args, "cache_ttl", config.DEFAULT_CACHE_TTL)
+    cache = netcache.ResponseCache(config.cache_dir(Path(args.data_dir)), ttl=ttl)
+    return cache, limiter
+
+
 def _resolve_queries(args) -> List[str]:
     """Collect the query list for a discovery run from ``--query``/``--queries-file``.
 
@@ -81,8 +99,18 @@ def _resolve_queries(args) -> List[str]:
     return queries
 
 
-def _discover(args, session) -> List[Dict[str, object]]:
-    """Run the selected discovery source and return normalised paper dicts."""
+def _discover(
+    args,
+    session,
+    cache: "Optional[netcache.ResponseCache]" = None,
+    limiter: "Optional[netcache.RateLimiter]" = None,
+) -> List[Dict[str, object]]:
+    """Run the selected discovery source and return normalised paper dicts.
+
+    ``cache``/``limiter`` are optional; pass the same instances across several
+    calls (several seed queries, or several sources) to share a cache and a
+    request budget between them.
+    """
     source = getattr(args, "source", "api")
     if source == "rss":
         if not args.category:
@@ -94,6 +122,8 @@ def _discover(args, session) -> List[Dict[str, object]]:
             max_results=args.max,
             session=session,
             delay=args.delay,
+            cache=cache,
+            limiter=limiter,
         )
     if source == "openalex":
         return openalex.search(
@@ -104,6 +134,8 @@ def _discover(args, session) -> List[Dict[str, object]]:
             mailto=getattr(args, "mailto", None),
             arxiv_only=getattr(args, "arxiv_only", False),
             search_field=getattr(args, "search_field", "default"),
+            cache=cache,
+            limiter=limiter,
         )
     if source == "crossref":
         return crossref.search(
@@ -112,6 +144,8 @@ def _discover(args, session) -> List[Dict[str, object]]:
             session=session,
             delay=args.delay,
             mailto=getattr(args, "mailto", None),
+            cache=cache,
+            limiter=limiter,
         )
     if source == "semanticscholar":
         return semanticscholar.search(
@@ -119,6 +153,8 @@ def _discover(args, session) -> List[Dict[str, object]]:
             max_results=args.max,
             session=session,
             delay=args.delay,
+            cache=cache,
+            limiter=limiter,
         )
     return arxiv.search(
         args.query,
@@ -127,6 +163,8 @@ def _discover(args, session) -> List[Dict[str, object]]:
         session=session,
         delay=args.delay,
         category=args.category,
+        cache=cache,
+        limiter=limiter,
     )
 
 
@@ -137,13 +175,14 @@ def cmd_search(args) -> int:
     except arxiv.ArxivError as exc:
         print(f"search failed: {exc}", file=sys.stderr)
         return 1
+    cache, limiter = _net(args, allow_cache=False)
     results: List[Dict[str, object]] = []
     seen = set()
     try:
         for q in queries:
             qargs = argparse.Namespace(**vars(args))
             qargs.query = q
-            for paper in _discover(qargs, session):
+            for paper in _discover(qargs, session, cache=cache, limiter=limiter):
                 if paper["arxiv_id"] in seen:
                     continue
                 seen.add(paper["arxiv_id"])
@@ -167,6 +206,7 @@ def cmd_fetch(args) -> int:
     try:
         queries = _resolve_queries(args)
         corpus_max = args.max
+        cache, limiter = _net(args)
         papers: List[Dict[str, object]] = []
         seen = set()
         for q in queries:
@@ -178,7 +218,7 @@ def cmd_fetch(args) -> int:
             if corpus_max is not None:
                 qargs.max = corpus_max - len(papers)
             try:
-                found = _discover(qargs, session)
+                found = _discover(qargs, session, cache=cache, limiter=limiter)
             except (arxiv.ArxivError, openalex.OpenAlexError, crossref.CrossrefError,
                     semanticscholar.SemanticScholarError) as exc:
                 print(f"  query {q!r}: FAILED ({exc})", file=sys.stderr)
@@ -196,9 +236,12 @@ def cmd_fetch(args) -> int:
             suffix = f" ({dropped} duplicate key(s) dropped)" if dropped else ""
             print(f"  query {q!r}: {len(found)} result(s), {new} new{suffix}")
         print(f"{args.source}: {len(papers)} unique paper(s) across {len(queries)} query/queries")
+        if cache is not None:
+            print(f"  cache: {cache.hits} hit(s), {cache.misses} miss(es)")
         if not getattr(args, "no_unpaywall", False):
             filled = unpaywall.enrich_missing_pdfs(
-                papers, session=session, mailto=getattr(args, "mailto", None), delay=args.delay
+                papers, session=session, mailto=getattr(args, "mailto", None), delay=args.delay,
+                cache=cache, limiter=limiter,
             )
             if filled:
                 print(f"  unpaywall: resolved {filled} open-access pdf url(s)")
@@ -496,7 +539,12 @@ def build_parser() -> argparse.ArgumentParser:
                             "'title-and-abstract' is strict and better for corpora")
         p.add_argument("--sort", default="relevance", choices=["relevance", "date"])
         p.add_argument("--delay", type=float, default=config.DEFAULT_DELAY,
-                       help="seconds between requests (arXiv asks for >=3)")
+                       help="seconds between requests (arXiv asks for >=3); also the shared "
+                            "rate limit across every source hit by this run")
+        p.add_argument("--no-cache", action="store_true",
+                       help="bypass the on-disk response cache (reads and writes) for this run")
+        p.add_argument("--cache-ttl", type=float, default=config.DEFAULT_CACHE_TTL,
+                       help="seconds a cached response stays valid (default: %(default)s)")
         p.add_argument("--no-download", action="store_true")
         p.add_argument("--no-unpaywall", action="store_true",
                        help="skip the Unpaywall lookup for papers with a DOI but no "
