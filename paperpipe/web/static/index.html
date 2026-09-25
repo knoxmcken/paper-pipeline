@@ -30,6 +30,7 @@
   .badge.done { background: #1b7a3c33; color: #1b7a3c; }
   .badge.error { background: #b3261e33; color: #b3261e; }
   .badge.running, .badge.queued { background: #8886; }
+  #detail textarea { width: 100%; box-sizing: border-box; min-height: 4.5rem; font: inherit; padding: 0.4rem; border-radius: 6px; border: 1px solid #8886; }
 </style>
 </head>
 <body>
@@ -43,12 +44,16 @@
   <section>
     <h2>Search</h2>
     <div class="row">
-      <input id="search-q" placeholder="title, author, abstract, arXiv id..." size="40">
+      <input id="search-q" placeholder="title, author, abstract, arXiv id..." size="40"
+             onkeydown="if(event.key==='Enter') loadPapers()">
+      <select id="collection-filter" onchange="loadPapers()" title="show one collection">
+        <option value="">all papers</option>
+      </select>
       <button onclick="loadPapers()">Search</button>
       <button onclick="document.getElementById('search-q').value=''; loadPapers()">Clear</button>
     </div>
     <table>
-      <thead><tr><th>arXiv id</th><th>Published</th><th>Title</th><th>Category</th></tr></thead>
+      <thead><tr><th>arXiv id</th><th>Published</th><th>Title</th><th>Category</th><th>Status</th></tr></thead>
       <tbody id="papers-body"></tbody>
     </table>
     <div id="detail"></div>
@@ -127,13 +132,30 @@ async function loadStats() {
     `<div class="stat"><b>${val}</b><span>${label}</span></div>`).join('');
 }
 
-// The search behind the list currently shown; Export downloads exactly that set.
+// The search and collection behind the list currently shown; Export downloads exactly that set.
 let listedQuery = '';
+let listedCollection = '';
+let statuses = [];
+
+async function loadCollections() {
+  const data = await api('/api/collections');
+  statuses = data.statuses;
+  const select = document.getElementById('collection-filter');
+  const chosen = select.value;
+  select.innerHTML = '<option value="">all papers</option>' + data.collections.map(c =>
+    `<option value="${escapeHtml(c.name)}">${escapeHtml(c.name)} (${c.papers})</option>`).join('');
+  if (data.collections.some(c => c.name === chosen)) select.value = chosen;
+}
 
 async function loadPapers() {
   const q = document.getElementById('search-q').value.trim();
+  const collection = document.getElementById('collection-filter').value;
   listedQuery = q;
-  const data = await api('/api/papers' + (q ? `?q=${encodeURIComponent(q)}` : ''));
+  listedCollection = collection;
+  const params = new URLSearchParams();
+  if (q) params.set('q', q);
+  if (collection) params.set('collection', collection);
+  const data = await api('/api/papers?' + params);
   const body = document.getElementById('papers-body');
   body.innerHTML = data.papers.map(p => `
     <tr class="paper-row" onclick="showPaper('${p.arxiv_id}')">
@@ -141,6 +163,7 @@ async function loadPapers() {
       <td>${(p.published || '').slice(0,10)}</td>
       <td>${escapeHtml(p.title)}</td>
       <td>${p.primary_category || ''}</td>
+      <td>${p.status || 'new'}</td>
     </tr>`).join('');
 }
 
@@ -166,7 +189,30 @@ async function showPaper(id) {
       ${p.abs_url ? `<a href="${p.abs_url}" target="_blank">abstract</a>` : ''}
       ${p.pdf_path ? `<span class="muted">PDF stored (${p.pdf_bytes || 0} bytes)</span>` : '<span class="muted">no PDF</span>'}
       ${p.text_path ? `<span class="muted">text extracted, ${p.page_count || '?'}p</span>` : '<span class="muted">no extracted text</span>'}
+    </div>
+    <div class="muted">collections: ${escapeHtml((p.collections || []).join(', ')) || 'none'}</div>
+    <div class="row" style="margin-top:0.6rem">
+      <label>status <select id="detail-status">${statuses.map(s =>
+        `<option value="${s}"${(p.status || 'new') === s ? ' selected' : ''}>${s}</option>`).join('')}</select></label>
+    </div>
+    <textarea id="detail-notes" placeholder="notes: why it matters, what to check...">${escapeHtml(p.notes || '')}</textarea>
+    <div class="row">
+      <button id="detail-save">Save</button>
+      <span class="muted" id="detail-saved"></span>
     </div>`;
+  document.getElementById('detail-save').onclick = () => savePaper(p.arxiv_id);
+}
+
+async function savePaper(id) {
+  const body = {
+    status: document.getElementById('detail-status').value,
+    notes: document.getElementById('detail-notes').value,
+  };
+  await api(`/api/papers/${encodeURIComponent(id)}`, {
+    method: 'PATCH', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body),
+  });
+  document.getElementById('detail-saved').textContent = 'saved';
+  loadPapers();
 }
 
 async function loadRuns() {
@@ -194,7 +240,7 @@ async function pollJob(id) {
   document.getElementById('job-log').textContent = job.output.join('\n');
   if (job.status === 'done' || job.status === 'error') {
     clearInterval(pollTimer);
-    loadStats(); loadPapers(); loadRuns();
+    loadStats(); loadCollections().then(loadPapers); loadRuns();
   }
 }
 
@@ -225,6 +271,7 @@ async function runAction(kind) {
 function runExport() {
   const params = new URLSearchParams({ format: document.getElementById('export-format').value });
   if (listedQuery) params.set('q', listedQuery);
+  if (listedCollection) params.set('collection', listedCollection);
   const link = document.createElement('a');
   link.href = '/api/export/download?' + params;
   link.download = '';
@@ -254,7 +301,7 @@ async function runFulltextSearch() {
 }
 
 loadStats();
-loadPapers();
+loadCollections().then(loadPapers);
 loadRuns();
 </script>
 </body>

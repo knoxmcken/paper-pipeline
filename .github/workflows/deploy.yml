@@ -1,0 +1,118 @@
+name: Deploy
+
+# Ships main to Cloud Run once CI has passed on it. Only the image changes: the
+# service's volume, service account, scaling and access settings come from the one-time
+# setup in deploy/cloudrun-deploy.sh and are left exactly as they are.
+#
+# Keyless auth via Workload Identity Federation, configured with repository variables
+# (Settings -> Secrets and variables -> Actions -> Variables); see README
+# "Continuous deployment". Until GCP_WORKLOAD_IDENTITY_PROVIDER is set, runs finish
+# green with a notice instead of failing main.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+# One deploy at a time; a newer commit's run waits instead of racing this one.
+concurrency:
+  group: deploy-cloud-run
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write # exchanged for short-lived Google credentials; no stored keys
+
+env:
+  PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+  REGION: ${{ vars.GCP_REGION || 'us-central1' }}
+  SERVICE_NAME: ${{ vars.CLOUD_RUN_SERVICE || 'paper-pipeline' }}
+  REPO_NAME: ${{ vars.ARTIFACT_REGISTRY_REPO || 'paper-pipeline' }}
+  # the commit CI passed on (workflow_run), or main's head (manual run)
+  DEPLOY_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+jobs:
+  deploy:
+    name: Build and deploy to Cloud Run
+    runs-on: ubuntu-latest
+    # CI must have passed on a push to main (not a PR run); manual runs only from main.
+    if: >-
+      (github.event_name == 'workflow_run'
+        && github.event.workflow_run.conclusion == 'success'
+        && github.event.workflow_run.event == 'push')
+      || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    environment: production
+    steps:
+      - name: Check configuration
+        id: config
+        env:
+          PROVIDER: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          DEPLOYER: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+        run: |
+          if [ -z "$PROVIDER" ] || [ -z "$DEPLOYER" ] || [ -z "$PROJECT_ID" ]; then
+            echo "::notice title=Deploy skipped::Set GCP_PROJECT_ID, GCP_WORKLOAD_IDENTITY_PROVIDER and GCP_DEPLOY_SERVICE_ACCOUNT repository variables to enable deploys (README: Continuous deployment)."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip if main has moved on
+        id: latest
+        if: steps.config.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }} # works for private repos, unlike an anonymous ls-remote
+        run: |
+          head="$(gh api "repos/${GITHUB_REPOSITORY}/commits/main" --jq .sha)"
+          if [ "$head" != "$DEPLOY_SHA" ]; then
+            echo "::notice title=Deploy skipped::$DEPLOY_SHA is no longer main's head ($head); that commit's run deploys instead."
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.latest.outputs.deploy == 'true'
+        with:
+          ref: ${{ env.DEPLOY_SHA }}
+
+      - name: Authenticate to Google Cloud
+        if: steps.latest.outputs.deploy == 'true'
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SERVICE_ACCOUNT }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+        if: steps.latest.outputs.deploy == 'true'
+
+      - name: Require the one-time setup
+        if: steps.latest.outputs.deploy == 'true'
+        run: |
+          if ! gcloud run services describe "$SERVICE_NAME" \
+              --project "$PROJECT_ID" --region "$REGION" --format='value(metadata.name)' >/dev/null; then
+            echo "::error title=Service not found::Run deploy/cloudrun-deploy.sh once to create $SERVICE_NAME with its /data volume; this workflow only updates the image."
+            exit 1
+          fi
+
+      - name: Build and push the image
+        if: steps.latest.outputs.deploy == 'true'
+        run: |
+          image="${REGION}-docker.pkg.dev/${PROJECT_ID}/${REPO_NAME}/${SERVICE_NAME}"
+          gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
+          docker build --tag "${image}:${DEPLOY_SHA}" --tag "${image}:latest" .
+          docker push --all-tags "$image"
+          echo "IMAGE=${image}:${DEPLOY_SHA}" >> "$GITHUB_ENV"
+
+      - name: Deploy the new image
+        if: steps.latest.outputs.deploy == 'true'
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --project "$PROJECT_ID" \
+            --region "$REGION" \
+            --image "$IMAGE" \
+            --quiet
+          url="$(gcloud run services describe "$SERVICE_NAME" \
+            --project "$PROJECT_ID" --region "$REGION" --format='value(status.url)')"
+          echo "### Deployed \`${DEPLOY_SHA:0:7}\` to ${url}" >> "$GITHUB_STEP_SUMMARY"

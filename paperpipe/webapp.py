@@ -45,6 +45,13 @@ class ReconcileRequest(BaseModel):
     fix: bool = False
 
 
+class PaperUpdate(BaseModel):
+    """Fields left out of the request body are left unchanged."""
+
+    status: Optional[str] = None
+    notes: Optional[str] = None
+
+
 class Job:
     def __init__(self, job_id: str, kind: str, argv: List[str]):
         self.id = job_id
@@ -136,20 +143,44 @@ def create_app(data_dir: Path) -> FastAPI:
         finally:
             conn.close()
 
+    def _listed(conn, q: Optional[str], collection: Optional[str],
+                limit: Optional[int]) -> List[Dict[str, object]]:
+        """The papers the list shows: optional search, optionally within one collection."""
+        if collection:
+            try:
+                rows = db.collection_papers(conn, collection)
+            except KeyError:
+                raise HTTPException(status_code=404, detail=f"no collection named {collection!r}")
+            if q:
+                keys = {r["arxiv_id"] for r in db.search(conn, q, limit=-1)}
+                rows = [r for r in rows if r["arxiv_id"] in keys]
+            return rows[:limit] if limit else rows
+        if q:
+            return db.search(conn, q, limit=limit or -1)
+        return db.list_papers(conn, limit=limit)
+
     @app.get("/api/papers")
-    def get_papers(q: Optional[str] = None, limit: int = 100):
+    def get_papers(q: Optional[str] = None, collection: Optional[str] = None, limit: int = 100):
         conn = _conn()
         try:
-            rows = db.search(conn, q, limit=limit) if q else db.list_papers(conn, limit=limit)
+            rows = _listed(conn, q, collection, limit)
             return {"count": len(rows), "papers": rows}
         finally:
             conn.close()
 
-    @app.get("/api/export/download")
-    def download_export(format: str, q: Optional[str] = None):
-        """The papers matching ``q`` (the list's search box), or all of them, as a file.
+    @app.get("/api/collections")
+    def get_collections():
+        conn = _conn()
+        try:
+            return {"collections": db.list_collections(conn), "statuses": list(db.STATUSES)}
+        finally:
+            conn.close()
 
-        Honours the search but not the list's display cap: every matching paper is
+    @app.get("/api/export/download")
+    def download_export(format: str, q: Optional[str] = None, collection: Optional[str] = None):
+        """The papers the list shows (search and collection filter) as a file.
+
+        Honours the filters but not the list's display cap: every matching paper is
         exported, not just the first page shown in the table.
         """
         spec = export.FORMATS.get(format)
@@ -160,7 +191,7 @@ def create_app(data_dir: Path) -> FastAPI:
             )
         conn = _conn()
         try:
-            papers = db.search(conn, q, limit=-1) if q else db.list_papers(conn)
+            papers = _listed(conn, q, collection, None)
         finally:
             conn.close()
         return Response(
@@ -189,6 +220,29 @@ def create_app(data_dir: Path) -> FastAPI:
             row = db.get_paper(conn, arxiv_id)
             if row is None:
                 raise HTTPException(status_code=404, detail="paper not found")
+            row["collections"] = db.paper_collections(conn, arxiv_id)
+            return row
+        finally:
+            conn.close()
+
+    @app.patch("/api/papers/{arxiv_id}")
+    def update_paper(arxiv_id: str, req: PaperUpdate):
+        dump = getattr(req, "model_dump", None) or req.dict  # pydantic v2, else v1
+        changes = dump(exclude_unset=True)
+        if changes.get("status") is not None and changes["status"] not in db.STATUSES:
+            raise HTTPException(
+                status_code=400, detail=f"status must be one of {', '.join(db.STATUSES)}"
+            )
+        conn = _conn()
+        try:
+            if db.get_paper(conn, arxiv_id) is None:
+                raise HTTPException(status_code=404, detail="paper not found")
+            if "status" in changes:
+                db.set_status(conn, [arxiv_id], changes["status"] or "new")
+            if "notes" in changes:
+                db.set_notes(conn, arxiv_id, changes["notes"])
+            row = db.get_paper(conn, arxiv_id)
+            row["collections"] = db.paper_collections(conn, arxiv_id)
             return row
         finally:
             conn.close()

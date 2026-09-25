@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,6 +26,7 @@ from . import (
     index,
     netcache,
     openalex,
+    projects,
     reconcile,
     semanticscholar,
     unpaywall,
@@ -39,8 +41,27 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def _data_dir(args) -> Path:
+    """Which corpus a command works on, most explicit first.
+
+    ``--data-dir`` > ``--project NAME`` > ``$PAPERPIPE_DATA`` > the project chosen with
+    ``paperpipe projects use`` > ``./data``.
+    """
+    if getattr(args, "data_dir", None):
+        return Path(args.data_dir)
+    try:
+        if getattr(args, "project", None):
+            return projects.path_of(args.project)
+        if os.environ.get("PAPERPIPE_DATA"):
+            return Path(os.environ["PAPERPIPE_DATA"])
+        name = projects.current()
+    except projects.ProjectError as exc:
+        raise SystemExit(f"paperpipe: {exc}") from exc
+    return projects.path_of(name) if name else Path("data")
+
+
 def _paths(args) -> Dict[str, Path]:
-    data_dir = Path(args.data_dir)
+    data_dir = _data_dir(args)
     return {
         "data_dir": data_dir,
         "db": config.db_path(data_dir),
@@ -78,7 +99,7 @@ def _net(args, allow_cache: bool = True):
     if not allow_cache or getattr(args, "no_cache", False):
         return None, limiter
     ttl = getattr(args, "cache_ttl", config.DEFAULT_CACHE_TTL)
-    cache = netcache.ResponseCache(config.cache_dir(Path(args.data_dir)), ttl=ttl)
+    cache = netcache.ResponseCache(config.cache_dir(_data_dir(args)), ttl=ttl)
     return cache, limiter
 
 
@@ -385,7 +406,17 @@ def cmd_export(args) -> int:
     conn, paths = _open(args)
     out_dir = Path(getattr(args, "out", None) or paths["exports"])
     written = []
-    papers = db.list_papers(conn)
+    collection = getattr(args, "collection", None)
+    if collection:
+        try:
+            papers = db.collection_papers(conn, collection)
+        except KeyError:
+            print(f"no collection named {collection!r}; see `paperpipe collection list`",
+                  file=sys.stderr)
+            conn.close()
+            return 2
+    else:
+        papers = db.list_papers(conn)
     out_dir.mkdir(parents=True, exist_ok=True)
     for fmt, spec in export.FORMATS.items():
         if args.format not in (fmt, "all"):
@@ -450,7 +481,7 @@ def cmd_serve(args) -> int:
         return 1
     from .webapp import create_app
 
-    app = create_app(Path(args.data_dir))
+    app = create_app(_data_dir(args))
     uvicorn.run(app, host=args.host, port=args.port)
     return 0
 
@@ -471,9 +502,14 @@ def cmd_show(args) -> int:
         print(f"\n{len(hits)} hit(s)")
         conn.close()
         return 0
-    rows = db.search(conn, term, limit=args.limit) if term else db.list_papers(conn, limit=args.limit)
+    if args.status:
+        rows = db.search(conn, term, limit=-1) if term else db.list_papers(conn)
+        rows = [r for r in rows if (r.get("status") or "new") == args.status][: args.limit]
+    else:
+        rows = db.search(conn, term, limit=args.limit) if term else db.list_papers(conn, limit=args.limit)
     for row in rows:
-        print(f"{row['arxiv_id']:<16} {(row.get('published') or '')[:10]}  {row['title'][:80]}")
+        print(f"{row['arxiv_id']:<16} {(row.get('published') or '')[:10]}  "
+              f"{row.get('status') or 'new':<11} {row['title'][:70]}")
     print(f"\n{len(rows)} paper(s)")
     conn.close()
     return 0
@@ -542,17 +578,117 @@ def cmd_duplicates(args) -> int:
     return 0
 
 
+def cmd_projects(args) -> int:
+    try:
+        if args.action == "list":
+            data = projects.load()
+            if not data["projects"]:
+                print("no projects yet; register one with: paperpipe projects add NAME [PATH]")
+            for name, entry in sorted(data["projects"].items()):
+                marker = "*" if name == data["current"] else " "
+                note = f"  {entry['description']}" if entry.get("description") else ""
+                print(f"{marker} {name:<20} {entry['path']}{note}")
+        elif args.action == "add":
+            path = Path(args.path) if args.path else Path.cwd() / "projects" / args.name
+            entry = projects.add(args.name, path, args.description)
+            config.ensure_dirs(Path(entry["path"]))
+            print(f"registered {args.name} -> {entry['path']}")
+            if args.use:
+                projects.use(args.name)
+                print(f"now using {args.name}")
+        elif args.action == "remove":
+            entry = projects.remove(args.name)
+            print(f"unregistered {args.name}; its data is untouched at {entry['path']}")
+        elif args.action in ("use", "open"):
+            entry = projects.use(args.name)
+            print(f"now using {args.name} ({entry['path']})")
+    except projects.ProjectError as exc:
+        print(f"paperpipe: {exc}", file=sys.stderr)
+        return 2
+    return 0
+
+
+def cmd_collection(args) -> int:
+    conn, _ = _open(args)
+    try:
+        if args.action == "list":
+            rows = db.list_collections(conn)
+            for row in rows:
+                note = f"  {row['description']}" if row.get("description") else ""
+                print(f"{row['name']:<24} {row['papers']:>4} paper(s){note}")
+            print(f"\n{len(rows)} collection(s)")
+        elif args.action == "add":
+            result = db.add_to_collection(conn, args.name, args.ids, _now(), args.description)
+            print(f"{args.name}: added {len(result['added'])}, already there {len(result['already'])}")
+            for missing in result["missing"]:
+                print(f"  no paper with key {missing!r}", file=sys.stderr)
+            return 1 if result["missing"] else 0
+        elif args.action == "remove":
+            result = db.remove_from_collection(conn, args.name, args.ids)
+            print(f"{args.name}: removed {len(result['removed'])}, "
+                  f"not in it {len(result['absent'])}")
+        elif args.action == "delete":
+            count = db.delete_collection(conn, args.name)
+            print(f"deleted collection {args.name} ({count} membership(s)); papers untouched")
+        elif args.action == "show":
+            rows = db.collection_papers(conn, args.name)
+            for row in rows:
+                print(f"{row['arxiv_id']:<16} {(row.get('published') or '')[:10]}  "
+                      f"{row.get('status') or 'new':<11} {row['title'][:70]}")
+            print(f"\n{len(rows)} paper(s) in {args.name}")
+    except KeyError:
+        print(f"no collection named {args.name!r}; see `paperpipe collection list`",
+              file=sys.stderr)
+        return 2
+    finally:
+        conn.close()
+    return 0
+
+
+def cmd_status(args) -> int:
+    conn, _ = _open(args)
+    try:
+        missing = db.set_status(conn, args.ids, args.status)
+    finally:
+        conn.close()
+    for arxiv_id in missing:
+        print(f"no paper with key {arxiv_id!r}", file=sys.stderr)
+    print(f"marked {len(args.ids) - len(missing)} paper(s) {args.status}")
+    return 1 if missing else 0
+
+
+def cmd_notes(args) -> int:
+    conn, _ = _open(args)
+    try:
+        paper = db.get_paper(conn, args.id)
+        if paper is None:
+            print(f"no paper with key {args.id!r}", file=sys.stderr)
+            return 2
+        if args.clear or args.text is not None:
+            db.set_notes(conn, args.id, None if args.clear else args.text)
+            print(f"{'cleared' if args.clear else 'saved'} notes for {args.id}")
+        else:
+            print(paper.get("notes") or "(no notes)")
+    finally:
+        conn.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paperpipe", description="Research paper data pipeline")
     parser.add_argument("--version", action="version", version=f"paperpipe {__version__}")
-    parser.add_argument("--data-dir", default=str(config.DEFAULT_DATA_DIR),
-                        help="pipeline data directory (default: %(default)s)")
+    parser.add_argument("--data-dir", default=None,
+                        help="pipeline data directory (default: --project, $PAPERPIPE_DATA, "
+                             "the project chosen with `projects use`, else ./data)")
+    parser.add_argument("--project", default=None,
+                        help="work on a registered project by name (see `paperpipe projects`)")
     sub = parser.add_subparsers(dest="command", required=True)
 
-    # Let --data-dir appear before OR after the subcommand. SUPPRESS keeps the
-    # subparser copy from clobbering a value already parsed by the main parser.
+    # Let --data-dir/--project appear before OR after the subcommand. SUPPRESS keeps
+    # the subparser copy from clobbering a value already parsed by the main parser.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--data-dir", default=argparse.SUPPRESS)
+    common.add_argument("--project", default=argparse.SUPPRESS)
 
     def add_fetch_flags(p):
         p.add_argument("-q", "--query", action="append", default=None,
@@ -628,6 +764,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_export.add_argument("--out", type=Path, help="output directory (default: <data-dir>/exports)")
     p_export.add_argument("--title", default="Paper Index")
     p_export.add_argument("--flat", action="store_true", help="skip category grouping")
+    p_export.add_argument("--collection", help="export only this collection's papers")
     p_export.set_defaults(func=cmd_export, id=None)
 
     p_run = sub.add_parser("run", parents=[common], help="fetch -> extract -> index -> export")
@@ -648,6 +785,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_show = sub.add_parser("show", parents=[common], help="list or search stored papers")
     p_show.add_argument("term", nargs="?", default=None)
     p_show.add_argument("--limit", type=int, default=25)
+    p_show.add_argument("--status", choices=db.STATUSES, help="only papers with this status")
     p_show.add_argument("--fulltext", action="store_true",
                         help="phrase search over extracted text instead of metadata")
     p_show.set_defaults(func=cmd_show, id=None, query=None)
@@ -670,6 +808,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="fold DROP into KEEP (KEEP's values win, gaps filled from DROP) and delete DROP",
     )
     p_duplicates.set_defaults(func=cmd_duplicates, id=None)
+
+    p_projects = sub.add_parser(
+        "projects", parents=[common], help="named, resumable corpora (each its own data dir)"
+    )
+    projects_sub = p_projects.add_subparsers(dest="action", required=True)
+    projects_sub.add_parser("list", help="registered projects; * marks the one in use")
+    p_padd = projects_sub.add_parser("add", help="register a project (creates its data dir)")
+    p_padd.add_argument("name")
+    p_padd.add_argument("path", nargs="?", help="data dir (default: ./projects/NAME)")
+    p_padd.add_argument("--description", default=None)
+    p_padd.add_argument("--use", action="store_true", help="also make it the project in use")
+    for action, text in (("use", "make NAME the default project for later commands"),
+                         ("remove", "unregister NAME (its data dir is left alone)")):
+        projects_sub.add_parser(action, help=text,
+                                aliases=["open"] if action == "use" else []).add_argument("name")
+    p_projects.set_defaults(func=cmd_projects, id=None)
+
+    p_collection = sub.add_parser(
+        "collection", parents=[common], help="named groups of papers within a project"
+    )
+    collection_sub = p_collection.add_subparsers(dest="action", required=True)
+    collection_sub.add_parser("list", help="collections with their paper counts")
+    p_cadd = collection_sub.add_parser("add", help="add papers (creates the collection)")
+    p_cadd.add_argument("name")
+    p_cadd.add_argument("ids", nargs="+", metavar="ID")
+    p_cadd.add_argument("--description", default=None)
+    p_cremove = collection_sub.add_parser("remove", help="take papers out of a collection")
+    p_cremove.add_argument("name")
+    p_cremove.add_argument("ids", nargs="+", metavar="ID")
+    collection_sub.add_parser("show", help="the collection's papers").add_argument("name")
+    collection_sub.add_parser(
+        "delete", help="delete a collection (its papers stay in the corpus)"
+    ).add_argument("name")
+    p_collection.set_defaults(func=cmd_collection, id=None)
+
+    p_status = sub.add_parser("status", parents=[common],
+                              help=f"set reading status: {', '.join(db.STATUSES)}")
+    p_status.add_argument("status", choices=db.STATUSES)
+    p_status.add_argument("ids", nargs="+", metavar="ID")
+    p_status.set_defaults(func=cmd_status, id=None)
+
+    p_notes = sub.add_parser("notes", parents=[common], help="show or set a paper's notes")
+    p_notes.add_argument("id")
+    p_notes.add_argument("text", nargs="?", default=None, help="new notes (replaces the old)")
+    p_notes.add_argument("--clear", action="store_true")
+    p_notes.set_defaults(func=cmd_notes)
     return parser
 
 

@@ -88,6 +88,47 @@ different DOIs); very similar titles are reported as `near_title`. Merging is ne
 automatic: `--merge KEEP DROP` keeps KEEP's values, fills its gaps from DROP (PDF and
 extracted text move as a unit), deletes DROP's row, and leaves files on disk untouched.
 
+### Projects, collections and reading status
+
+A **project** is a named data dir, so you can come back to a corpus by name instead of
+remembering its path ([why](docs/decisions/0001-projects-are-named-data-dirs.md)):
+
+```bash
+paperpipe projects add thesis --description "PhD lit review" --use   # data dir: ./projects/thesis
+paperpipe projects add old-corpus ~/corpora/agents                  # register an existing data dir
+paperpipe projects list                                             # * marks the one in use
+paperpipe projects use old-corpus                                   # later commands use it (alias: open)
+paperpipe --project thesis stats                                    # or pick one per command
+paperpipe projects remove old-corpus                                # unregisters; never deletes data
+```
+
+The data dir is chosen from, in order: `--data-dir`, `--project`, `$PAPERPIPE_DATA`,
+the project in use, then `./data`. The registry lives at
+`~/.config/paperpipe/projects.json` (override with `$PAPERPIPE_PROJECTS`).
+
+Within a project, **collections** group papers the way Zotero collections do (a paper
+can be in several), and every paper has a **status** and free-text **notes**:
+
+```bash
+paperpipe collection add shortlist 2401.00001 2401.00002 --description "first pass"
+paperpipe collection list
+paperpipe collection show shortlist
+paperpipe collection remove shortlist 2401.00002    # the paper stays in the corpus
+paperpipe collection delete shortlist               # likewise for all its papers
+
+paperpipe status reading 2401.00001                 # new | reading | shortlisted | cited | discarded
+paperpipe notes 2401.00001 "check the ablation in section 4"
+paperpipe notes 2401.00001                          # print them; --clear to remove
+paperpipe show --status shortlisted
+
+paperpipe export --collection shortlist --format bibtex   # any export format, one collection
+```
+
+Status and notes are never overwritten by a re-fetch, show up in the markdown/CSV/Excel
+exports, and can also be edited from the web UI's paper detail pane. The web UI can
+filter the list (and so the Export download) to one collection. `duplicates --merge`
+keeps both papers' notes and all of their collections.
+
 ### The `download` stage
 
 `fetch`/`run` only download whatever discovery returns *this* time. On a shifting
@@ -171,6 +212,65 @@ Notes:
 - **First deploy starts with an empty `/data`.** Seed it by copying an existing corpus
   into the bucket (`gcloud storage cp -r data/* gs://<bucket>/`) before or after the
   first deploy, or just run `fetch`/`index` from the deployed UI.
+
+### Continuous deployment
+
+`.github/workflows/deploy.yml` redeploys `main` whenever CI passes on a push to it (and
+on demand from the Actions tab, from `main` only). It builds the image on the runner,
+pushes it to Artifact Registry tagged with the commit SHA, and points the existing
+Cloud Run service at it. **Only the image changes:** the `/data` volume, service
+account, `--max-instances=1` and private access all stay as `cloudrun-deploy.sh` set
+them, so run that script once first. If `main` has already moved on by the time a run
+starts, it skips and leaves the deploy to the newer commit's run. Runs use the
+`production` GitHub environment, where you can add required reviewers if you want a
+manual approval gate.
+
+Until the variables below are set, the workflow finishes with a "deploy skipped"
+notice instead of failing. Auth is keyless (Workload Identity Federation): GitHub's
+OIDC token is exchanged for short-lived credentials, so no service-account key is
+stored anywhere. One-time setup:
+
+```bash
+PROJECT_ID=personal-tools-isotopes55
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+REGION=us-central1
+RUNTIME_SA=paper-pipeline-deploy@$PROJECT_ID.iam.gserviceaccount.com   # the service's identity
+CI_SA=paper-pipeline-ci@$PROJECT_ID.iam.gserviceaccount.com            # what GitHub Actions acts as
+
+# 1. Trust GitHub's OIDC tokens, but only from this repo's main branch.
+gcloud iam workload-identity-pools create github --project=$PROJECT_ID --location=global
+gcloud iam workload-identity-pools providers create-oidc paper-pipeline \
+  --project=$PROJECT_ID --location=global --workload-identity-pool=github \
+  --issuer-uri=https://token.actions.githubusercontent.com \
+  --attribute-mapping=google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref \
+  --attribute-condition="assertion.repository=='knoxmcken/paper-pipeline' && assertion.ref=='refs/heads/main'"
+
+# 2. A deploy-only service account the workflow may impersonate.
+gcloud iam service-accounts create paper-pipeline-ci --project=$PROJECT_ID
+gcloud iam service-accounts add-iam-policy-binding $CI_SA --project=$PROJECT_ID \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository/knoxmcken/paper-pipeline"
+
+# 3. Least privilege: push images, update this one service, run it as the runtime SA.
+gcloud artifacts repositories add-iam-policy-binding paper-pipeline \
+  --project=$PROJECT_ID --location=$REGION \
+  --member=serviceAccount:$CI_SA --role=roles/artifactregistry.writer
+gcloud run services add-iam-policy-binding paper-pipeline \
+  --project=$PROJECT_ID --region=$REGION \
+  --member=serviceAccount:$CI_SA --role=roles/run.developer
+gcloud iam service-accounts add-iam-policy-binding $RUNTIME_SA --project=$PROJECT_ID \
+  --member=serviceAccount:$CI_SA --role=roles/iam.serviceAccountUser
+
+# 4. Point the workflow at it (repository variables, not secrets: none of these are secret).
+gh variable set GCP_PROJECT_ID --body $PROJECT_ID
+gh variable set GCP_REGION --body $REGION
+gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --body $CI_SA
+gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER \
+  --body projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/paper-pipeline
+```
+
+Optional variables: `CLOUD_RUN_SERVICE` and `ARTIFACT_REGISTRY_REPO` (both default to
+`paper-pipeline`). Each successful run links the deployed revision in its job summary.
 
 ## Design notes
 
