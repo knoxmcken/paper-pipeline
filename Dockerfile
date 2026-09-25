@@ -3,6 +3,13 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# PDF tooling for `extract`: pdftotext (poppler-utils) is the text backend, mutool
+# (mupdf-tools) the fallback and the source of real tables of contents from PDF
+# outlines. Installed first so this layer stays cached across code changes.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends poppler-utils mupdf-tools \
+    && rm -rf /var/lib/apt/lists/*
+
 # Install the package (with the 'web' extra) before copying the rest so
 # dependency layers stay cached across code-only changes.
 COPY pyproject.toml README.md ./

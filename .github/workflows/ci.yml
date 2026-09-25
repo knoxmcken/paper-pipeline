@@ -68,3 +68,23 @@ jobs:
           paperpipe --version
           python -m paperpipe --help > /dev/null
           paperpipe --data-dir "$RUNNER_TEMP/data" stats
+
+  docker:
+    name: Docker image builds with PDF tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: docker build --tag paperpipe:ci .
+
+      # The deployed web UI's Extract button needs these on the image's PATH.
+      - name: Check the image
+        run: |
+          docker run --rm paperpipe:ci sh -c '
+            set -e
+            pdftotext -v
+            mutool -v
+            paperpipe --version
+            python -c "from paperpipe import extract; assert extract.available_backend() == \"pdftotext\""
+          '

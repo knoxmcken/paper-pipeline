@@ -186,7 +186,9 @@ Point it elsewhere with `--data-dir` or `PAPERPIPE_DATA`.
 ## Deploying to Cloud Run
 
 A `Dockerfile` builds the web UI into a container (`paperpipe serve --host 0.0.0.0
---port $PORT`, reading `PAPERPIPE_DATA` for the data dir, defaulting to `/data`).
+--port $PORT`, reading `PAPERPIPE_DATA` for the data dir, defaulting to `/data`). The image
+includes `pdftotext` and `mutool`, so Extract (and outline-based headings) work in the
+deployed UI; CI builds the image and checks both are present.
 
 Cloud Run's local filesystem is ephemeral, so `/data` is backed by a GCS bucket mounted
 as a Cloud Run volume (gen2 execution environment). `deploy/cloudrun-deploy.sh` sets
