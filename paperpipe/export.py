@@ -60,6 +60,10 @@ def render_markdown(papers: List[Dict[str, object]], title: str = "Paper Index",
                 lines.append(f"- **Journal:** {paper['journal_ref']}")
             if not paper.get("pdf_path"):
                 lines.append("- **Access:** metadata only — no open-access PDF found")
+            if paper.get("status"):
+                lines.append(f"- **Status:** {paper['status']}")
+            if paper.get("notes"):
+                lines.append(f"- **Notes:** {' '.join(str(paper['notes']).split())}")
             if paper.get("pages") or paper.get("page_count"):
                 lines.append(f"- **Pages:** {paper.get('page_count')}")
             headings = paper.get("headings") or []
@@ -85,7 +89,7 @@ def write_markdown(conn, path: Path, title: str = "Paper Index", category: bool 
 # ``doi:...``); ``arxiv`` is the real arXiv id, blank for works that have none.
 TABLE_COLUMNS = [
     "arxiv_id", "title", "primary_category", "published", "page_count", "abs_url", "pdf_path",
-    "authors", "metadata_only", "year", "doi", "arxiv", "url",
+    "authors", "metadata_only", "year", "doi", "arxiv", "url", "status", "notes",
 ]
 
 
@@ -98,6 +102,7 @@ def table_rows(papers: List[Dict[str, object]]) -> List[List[object]]:
             paper.get("pdf_path"), "; ".join(paper.get("authors") or []),
             not paper.get("pdf_path"), bibliography.year(paper), bibliography.doi(paper),
             bibliography.arxiv_id(paper), bibliography.url(paper),
+            paper.get("status") or "new", paper.get("notes"),
         ])
     return rows
 

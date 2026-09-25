@@ -88,6 +88,47 @@ different DOIs); very similar titles are reported as `near_title`. Merging is ne
 automatic: `--merge KEEP DROP` keeps KEEP's values, fills its gaps from DROP (PDF and
 extracted text move as a unit), deletes DROP's row, and leaves files on disk untouched.
 
+### Projects, collections and reading status
+
+A **project** is a named data dir, so you can come back to a corpus by name instead of
+remembering its path ([why](docs/decisions/0001-projects-are-named-data-dirs.md)):
+
+```bash
+paperpipe projects add thesis --description "PhD lit review" --use   # data dir: ./projects/thesis
+paperpipe projects add old-corpus ~/corpora/agents                  # register an existing data dir
+paperpipe projects list                                             # * marks the one in use
+paperpipe projects use old-corpus                                   # later commands use it (alias: open)
+paperpipe --project thesis stats                                    # or pick one per command
+paperpipe projects remove old-corpus                                # unregisters; never deletes data
+```
+
+The data dir is chosen from, in order: `--data-dir`, `--project`, `$PAPERPIPE_DATA`,
+the project in use, then `./data`. The registry lives at
+`~/.config/paperpipe/projects.json` (override with `$PAPERPIPE_PROJECTS`).
+
+Within a project, **collections** group papers the way Zotero collections do (a paper
+can be in several), and every paper has a **status** and free-text **notes**:
+
+```bash
+paperpipe collection add shortlist 2401.00001 2401.00002 --description "first pass"
+paperpipe collection list
+paperpipe collection show shortlist
+paperpipe collection remove shortlist 2401.00002    # the paper stays in the corpus
+paperpipe collection delete shortlist               # likewise for all its papers
+
+paperpipe status reading 2401.00001                 # new | reading | shortlisted | cited | discarded
+paperpipe notes 2401.00001 "check the ablation in section 4"
+paperpipe notes 2401.00001                          # print them; --clear to remove
+paperpipe show --status shortlisted
+
+paperpipe export --collection shortlist --format bibtex   # any export format, one collection
+```
+
+Status and notes are never overwritten by a re-fetch, show up in the markdown/CSV/Excel
+exports, and can also be edited from the web UI's paper detail pane. The web UI can
+filter the list (and so the Export download) to one collection. `duplicates --merge`
+keeps both papers' notes and all of their collections.
+
 ### The `download` stage
 
 `fetch`/`run` only download whatever discovery returns *this* time. On a shifting

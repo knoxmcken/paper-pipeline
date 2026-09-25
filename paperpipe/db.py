@@ -31,6 +31,8 @@ CREATE TABLE IF NOT EXISTS papers (
     page_count       INTEGER,
     headings         TEXT,
     headings_method  TEXT,
+    status           TEXT,
+    notes            TEXT,
     source           TEXT,
     cited_by         INTEGER,
     fetched_at       TEXT,
@@ -45,6 +47,21 @@ CREATE TABLE IF NOT EXISTS runs (
     finished_at TEXT,
     ok          INTEGER,
     message     TEXT
+);
+
+-- User-curated groups within one project (data dir). A paper can sit in several.
+CREATE TABLE IF NOT EXISTS collections (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL UNIQUE,
+    description TEXT,
+    created_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS paper_collections (
+    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+    arxiv_id      TEXT NOT NULL REFERENCES papers(arxiv_id) ON DELETE CASCADE,
+    added_at      TEXT NOT NULL,
+    PRIMARY KEY (collection_id, arxiv_id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_papers_primary_category ON papers(primary_category);
@@ -97,7 +114,16 @@ ON CONFLICT(arxiv_id) DO UPDATE SET
 """
 
 # Columns added after the first release; merged into existing databases on open.
-MIGRATIONS = (("source", "TEXT"), ("cited_by", "INTEGER"), ("headings_method", "TEXT"))
+MIGRATIONS = (
+    ("source", "TEXT"),
+    ("cited_by", "INTEGER"),
+    ("headings_method", "TEXT"),
+    ("status", "TEXT"),
+    ("notes", "TEXT"),
+)
+
+# Where a paper stands in the user's reading; NULL in the database reads as "new".
+STATUSES = ("new", "reading", "shortlisted", "cited", "discarded")
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -105,6 +131,7 @@ def connect(path: Path) -> sqlite3.Connection:
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON")  # collection memberships follow deleted rows
     return conn
 
 
@@ -286,3 +313,129 @@ def finish_run(conn: sqlite3.Connection, run_id: int, ok: bool, message: str,
         (1 if ok else 0, message, finished_at, run_id),
     )
     conn.commit()
+
+
+def set_status(conn: sqlite3.Connection, arxiv_ids: List[str], status: str) -> List[str]:
+    """Set ``status`` on each paper; returns the ids that do not exist (left untouched)."""
+    if status not in STATUSES:
+        raise ValueError(f"unknown status {status!r}; one of {', '.join(STATUSES)}")
+    missing = [i for i in arxiv_ids if get_paper(conn, i) is None]
+    with conn:
+        conn.executemany(
+            "UPDATE papers SET status=? WHERE arxiv_id=?",
+            [(None if status == "new" else status, i) for i in arxiv_ids if i not in missing],
+        )
+    return missing
+
+
+def set_notes(conn: sqlite3.Connection, arxiv_id: str, notes: Optional[str]) -> bool:
+    """Replace a paper's notes (``None`` or blank clears them); False if no such paper."""
+    with conn:
+        cur = conn.execute(
+            "UPDATE papers SET notes=? WHERE arxiv_id=?", ((notes or "").strip() or None, arxiv_id)
+        )
+    return cur.rowcount == 1
+
+
+def _collection_id(conn: sqlite3.Connection, name: str) -> Optional[int]:
+    row = conn.execute("SELECT id FROM collections WHERE name=?", (name,)).fetchone()
+    return int(row[0]) if row else None
+
+
+def add_to_collection(conn: sqlite3.Connection, name: str, arxiv_ids: List[str], added_at: str,
+                      description: Optional[str] = None) -> Dict[str, List[str]]:
+    """Create ``name`` if needed and add the papers; re-adding is a no-op.
+
+    Returns ``{"added": [...], "already": [...], "missing": [...]}``; unknown ids are
+    reported, never inserted.
+    """
+    result: Dict[str, List[str]] = {"added": [], "already": [], "missing": []}
+    with conn:
+        conn.execute(
+            "INSERT OR IGNORE INTO collections (name, description, created_at) VALUES (?, ?, ?)",
+            (name, description, added_at),
+        )
+        if description is not None:
+            conn.execute("UPDATE collections SET description=? WHERE name=?", (description, name))
+        collection_id = _collection_id(conn, name)
+        for arxiv_id in arxiv_ids:
+            if get_paper(conn, arxiv_id) is None:
+                result["missing"].append(arxiv_id)
+                continue
+            cur = conn.execute(
+                "INSERT OR IGNORE INTO paper_collections (collection_id, arxiv_id, added_at) "
+                "VALUES (?, ?, ?)",
+                (collection_id, arxiv_id, added_at),
+            )
+            result["added" if cur.rowcount else "already"].append(arxiv_id)
+    return result
+
+
+def remove_from_collection(conn: sqlite3.Connection, name: str,
+                           arxiv_ids: List[str]) -> Dict[str, List[str]]:
+    """Take papers out of a collection (the papers themselves are untouched)."""
+    collection_id = _collection_id(conn, name)
+    if collection_id is None:
+        raise KeyError(name)
+    result: Dict[str, List[str]] = {"removed": [], "absent": []}
+    with conn:
+        for arxiv_id in arxiv_ids:
+            cur = conn.execute(
+                "DELETE FROM paper_collections WHERE collection_id=? AND arxiv_id=?",
+                (collection_id, arxiv_id),
+            )
+            result["removed" if cur.rowcount else "absent"].append(arxiv_id)
+    return result
+
+
+def delete_collection(conn: sqlite3.Connection, name: str) -> int:
+    """Delete a collection and its memberships; returns how many papers it held."""
+    collection_id = _collection_id(conn, name)
+    if collection_id is None:
+        raise KeyError(name)
+    with conn:
+        count = conn.execute(
+            "SELECT COUNT(*) FROM paper_collections WHERE collection_id=?", (collection_id,)
+        ).fetchone()[0]
+        conn.execute("DELETE FROM collections WHERE id=?", (collection_id,))
+    return int(count)
+
+
+def list_collections(conn: sqlite3.Connection) -> List[Dict[str, object]]:
+    rows = conn.execute(
+        """SELECT c.name, c.description, c.created_at, COUNT(pc.arxiv_id) AS papers
+           FROM collections c LEFT JOIN paper_collections pc ON pc.collection_id = c.id
+           GROUP BY c.id ORDER BY c.name"""
+    )
+    return [dict(r) for r in rows]
+
+
+def collection_papers(conn: sqlite3.Connection, name: str) -> List[Dict[str, object]]:
+    """The collection's papers, newest first; raises KeyError for an unknown collection."""
+    collection_id = _collection_id(conn, name)
+    if collection_id is None:
+        raise KeyError(name)
+    rows = conn.execute(
+        """SELECT p.* FROM papers p JOIN paper_collections pc ON pc.arxiv_id = p.arxiv_id
+           WHERE pc.collection_id=? ORDER BY p.published DESC""",
+        (collection_id,),
+    )
+    return [_decode(r) for r in rows]
+
+
+def paper_collections(conn: sqlite3.Connection, arxiv_id: str) -> List[str]:
+    rows = conn.execute(
+        """SELECT c.name FROM collections c JOIN paper_collections pc ON pc.collection_id = c.id
+           WHERE pc.arxiv_id=? ORDER BY c.name""",
+        (arxiv_id,),
+    )
+    return [r[0] for r in rows]
+
+
+def move_memberships(conn: sqlite3.Connection, from_id: str, to_id: str) -> None:
+    """Give ``to_id`` every collection ``from_id`` is in (used when merging duplicates)."""
+    conn.execute(
+        """INSERT OR IGNORE INTO paper_collections (collection_id, arxiv_id, added_at)
+           SELECT collection_id, ?, added_at FROM paper_collections WHERE arxiv_id=?""",
+        (to_id, from_id),
+    )

@@ -165,7 +165,8 @@ def merge(conn: sqlite3.Connection, keep: str, drop: str) -> Dict[str, object]:
 
     ``keep`` wins every column it already has; its gaps are filled from ``drop``
     (the PDF and text column groups move whole), ``cited_by`` takes the larger
-    count, and ``drop``'s full-text rows move over if its text did.
+    count, ``drop``'s full-text rows move over if its text did, both rows' notes
+    are kept, and ``keep`` joins every collection ``drop`` was in.
     """
     if keep == drop:
         raise ValueError("cannot merge a paper into itself")
@@ -184,6 +185,8 @@ def merge(conn: sqlite3.Connection, keep: str, drop: str) -> Dict[str, object]:
     if kept.get("cited_by") is not None and dropped.get("cited_by") is not None:
         if dropped["cited_by"] > kept["cited_by"]:
             updates["cited_by"] = dropped["cited_by"]
+    if kept.get("notes") and dropped.get("notes") and kept["notes"] != dropped["notes"]:
+        updates["notes"] = f"{kept['notes']}\n\n[merged from {drop}] {dropped['notes']}"
     took_text = False
     for group in (PDF_GROUP, TEXT_GROUP):
         if not kept.get(group[0]) and dropped.get(group[0]):
@@ -202,6 +205,7 @@ def merge(conn: sqlite3.Connection, keep: str, drop: str) -> Dict[str, object]:
             conn.execute("UPDATE papers_fts SET arxiv_id=? WHERE arxiv_id=?", (keep, drop))
         else:
             conn.execute("DELETE FROM papers_fts WHERE arxiv_id=?", (drop,))
+        db.move_memberships(conn, drop, keep)
         conn.execute("DELETE FROM papers WHERE arxiv_id=?", (drop,))
 
     orphans = [

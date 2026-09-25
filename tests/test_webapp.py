@@ -171,3 +171,34 @@ def test_export_download_rejects_unknown_format(client):
     resp = client.get("/api/export/download", params={"format": "docx"})
     assert resp.status_code == 400
     assert "one of" in resp.json()["detail"]
+
+
+def test_patch_paper_sets_status_and_notes(client):
+    resp = client.patch("/api/papers/2401.00001", json={"status": "reading", "notes": "look at §3"})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["status"] == "reading" and body["notes"] == "look at §3"
+    # fields left out are left alone
+    body = client.patch("/api/papers/2401.00001", json={"notes": ""}).json()
+    assert body["status"] == "reading" and body["notes"] is None
+    assert client.patch("/api/papers/2401.00001", json={"status": "maybe"}).status_code == 400
+    assert client.patch("/api/papers/9999.99999", json={"notes": "x"}).status_code == 404
+
+
+def test_collections_filter_the_list_and_the_download(client, tmp_path):
+    conn = db.connect(config.db_path(tmp_path))
+    db.add_to_collection(conn, "short", ["2401.00002"], "2024-01-01T00:00:00Z")
+    conn.close()
+    body = client.get("/api/collections").json()
+    assert body["collections"][0]["name"] == "short" and body["collections"][0]["papers"] == 1
+    assert "shortlisted" in body["statuses"]
+
+    listed = client.get("/api/papers", params={"collection": "short"}).json()
+    assert [p["arxiv_id"] for p in listed["papers"]] == ["2401.00002"]
+    none = client.get("/api/papers", params={"collection": "short", "q": "Beta"}).json()
+    assert none["count"] == 0
+    assert client.get("/api/papers", params={"collection": "ghost"}).status_code == 404
+
+    resp = client.get("/api/export/download", params={"format": "csv", "collection": "short"})
+    assert resp.headers["x-paper-count"] == "1"
+    assert client.get("/api/papers/2401.00002").json()["collections"] == ["short"]
