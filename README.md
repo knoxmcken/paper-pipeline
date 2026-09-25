@@ -75,7 +75,18 @@ paperpipe index --check                                 # is index.json in sync 
 # repair drift between the stored corpus and its sources
 paperpipe reconcile                                     # dry run: lists dead/paywalled links, missing files, key collisions
 paperpipe reconcile --fix                                # re-resolves stale links (preferring the arXiv copy) and re-downloads
+
+# the same work stored twice (arXiv id vs doi:..., preprint vs published version)
+paperpipe duplicates                                    # lists candidate pairs and the evidence; changes nothing
+paperpipe duplicates --merge 2401.00001 doi:10.1000/x   # fold the second into the first, delete the second
 ```
+
+`duplicates` pairs papers that share a DOI, share an arXiv id (as a key, an arXiv
+`10.48550/arXiv.*` DOI or an arxiv.org link), or have the same normalised title and
+first author within a year of each other (preprint and journal versions usually carry
+different DOIs); very similar titles are reported as `near_title`. Merging is never
+automatic: `--merge KEEP DROP` keeps KEEP's values, fills its gaps from DROP (PDF and
+extracted text move as a unit), deletes DROP's row, and leaves files on disk untouched.
 
 ### The `download` stage
 
@@ -304,7 +315,7 @@ are absent.
 
 ## Roadmap
 
-- Optional embeddings + duplicate detection
+- Optional embeddings
 
 ## License
 
