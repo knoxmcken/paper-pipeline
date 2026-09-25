@@ -83,15 +83,16 @@
     <div class="row">
       <button onclick="runAction('extract')">Extract text</button>
       <button onclick="runAction('index')">Rebuild index</button>
-      <select id="export-format">
-        <option value="all">all</option>
-        <option value="md">md</option>
-        <option value="csv">csv</option>
-        <option value="bibtex">bibtex</option>
-        <option value="csljson">csl-json</option>
-        <option value="ris">ris</option>
+      <select id="export-format" title="format for the listed papers">
+        <option value="csv">CSV</option>
+        <option value="md">Markdown</option>
+        <option value="biblatex">BibLaTeX</option>
+        <option value="xlsx">Excel (.xlsx)</option>
+        <option value="bibtex">BibTeX</option>
+        <option value="csljson">CSL-JSON</option>
+        <option value="ris">RIS</option>
       </select>
-      <button onclick="runExport()">Export</button>
+      <button onclick="runExport()">Export listed papers</button>
     </div>
     <div class="row">
       <button onclick="runReconcile(false)">Reconcile (dry-run)</button>
@@ -126,8 +127,12 @@ async function loadStats() {
     `<div class="stat"><b>${val}</b><span>${label}</span></div>`).join('');
 }
 
+// The search behind the list currently shown; Export downloads exactly that set.
+let listedQuery = '';
+
 async function loadPapers() {
   const q = document.getElementById('search-q').value.trim();
+  listedQuery = q;
   const data = await api('/api/papers' + (q ? `?q=${encodeURIComponent(q)}` : ''));
   const body = document.getElementById('papers-body');
   body.innerHTML = data.papers.map(p => `
@@ -217,10 +222,15 @@ async function runAction(kind) {
   watchJob(job);
 }
 
-async function runExport() {
-  const format = document.getElementById('export-format').value;
-  const job = await api('/api/actions/export', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({format}) });
-  watchJob(job);
+function runExport() {
+  const params = new URLSearchParams({ format: document.getElementById('export-format').value });
+  if (listedQuery) params.set('q', listedQuery);
+  const link = document.createElement('a');
+  link.href = '/api/export/download?' + params;
+  link.download = '';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
 }
 
 async function runReconcile(fix) {

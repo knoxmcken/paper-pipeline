@@ -32,13 +32,7 @@ from . import (
 
 STAGES = ("fetch", "download", "extract", "index", "export")
 
-# --format value -> (file written under the export dir, builder over the paper list)
-BIBLIOGRAPHY_FORMATS = {
-    "bibtex": ("papers.bib", bibliography.to_bibtex),
-    "csljson": ("papers.csl.json", bibliography.to_csljson),
-    "ris": ("papers.ris", bibliography.to_ris),
-}
-EXPORT_FORMATS = ["md", "csv", *BIBLIOGRAPHY_FORMATS, "all"]
+EXPORT_FORMATS = [*export.FORMATS, "all"]
 
 
 def _now() -> str:
@@ -391,22 +385,18 @@ def cmd_export(args) -> int:
     conn, paths = _open(args)
     out_dir = Path(getattr(args, "out", None) or paths["exports"])
     written = []
-    if args.format in ("md", "all"):
-        path = export.write_markdown(
-            conn, out_dir / "papers.md", title=args.title, category=not args.flat
-        )
+    papers = db.list_papers(conn)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for fmt, spec in export.FORMATS.items():
+        if args.format not in (fmt, "all"):
+            continue
+        path = out_dir / spec.filename
+        if fmt == "md":
+            body = export.render_markdown(papers, title=args.title, category=not args.flat)
+            path.write_text(body, encoding="utf-8")
+        else:
+            path.write_bytes(export.render(fmt, papers))
         written.append(path)
-    if args.format in ("csv", "all"):
-        written.append(export.build_csv(conn, out_dir / "papers.csv"))
-    formats = [f for f in BIBLIOGRAPHY_FORMATS if args.format in (f, "all")]
-    if formats:
-        papers = db.list_papers(conn)
-        out_dir.mkdir(parents=True, exist_ok=True)
-        for fmt in formats:
-            filename, build = BIBLIOGRAPHY_FORMATS[fmt]
-            path = out_dir / filename
-            path.write_text(build(papers), encoding="utf-8")
-            written.append(path)
     for path in written:
         print(f"wrote {path}")
     conn.close()

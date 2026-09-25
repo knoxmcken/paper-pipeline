@@ -1,4 +1,4 @@
-"""Reference-manager exports: BibTeX, CSL-JSON and RIS.
+"""Reference-manager exports: BibTeX, BibLaTeX, CSL-JSON and RIS.
 
 Each paper becomes one entry carrying title, authors, year, DOI, arXiv id and URL,
 in a shape Zotero (and most other reference managers) imports directly. Output is
@@ -134,6 +134,34 @@ def to_bibtex(papers: List[Dict[str, object]]) -> str:
         ]
         body = ",\n".join(f"  {name} = {{{value}}}" for name, value in fields if value)
         entries.append(f"@{'article' if journal else 'misc'}{{{key},\n{body}\n}}\n")
+    return "\n".join(entries)
+
+
+def _iso_date(paper: Dict[str, object]) -> Optional[str]:
+    parts = _date_parts(paper)
+    return "-".join(f"{p:02d}" if i else str(p) for i, p in enumerate(parts)) or None
+
+
+def to_biblatex(papers: List[Dict[str, object]]) -> str:
+    """BibLaTeX: ``@online`` preprints with ``eprinttype = arxiv``, ``@article`` with a journal."""
+    entries = []
+    for key, paper in keyed(papers):
+        eprint = arxiv_id(paper)
+        journal = paper.get("journal_ref")
+        fields: List[Tuple[str, Optional[str]]] = [
+            ("title", "{" + _bibtex_value(paper.get("title") or "") + "}"),
+            ("author", " and ".join(_bibtex_author(str(a)) for a in paper.get("authors") or []) or None),
+            ("date", _iso_date(paper)),
+            ("journaltitle", _bibtex_value(journal) if journal else None),
+            ("doi", doi(paper)),
+            ("eprint", eprint),
+            ("eprinttype", "arxiv" if eprint else None),
+            ("eprintclass", paper.get("primary_category") if eprint else None),
+            ("url", url(paper)),
+            ("abstract", _bibtex_value(paper["abstract"]) if paper.get("abstract") else None),
+        ]
+        body = ",\n".join(f"  {name} = {{{value}}}" for name, value in fields if value)
+        entries.append(f"@{'article' if journal else 'online'}{{{key},\n{body}\n}}\n")
     return "\n".join(entries)
 
 

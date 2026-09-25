@@ -58,7 +58,7 @@ paperpipe search -q "graph neural networks" -n 10     # query only, stores nothi
 paperpipe fetch  -q "graph neural networks" -n 10     # metadata + PDFs into data/
 paperpipe extract                                       # everything missing text
 paperpipe index                                         # regenerate data/index.json
-paperpipe export --format all                           # data/exports/papers.{md,csv,bib,csl.json,ris}
+paperpipe export --format all                           # every format below into data/exports/
 paperpipe export --format bibtex --out ~/refs           # one format, somewhere else
 
 # fill in PDFs for papers already stored in the DB (not just what the last search returned)
@@ -119,9 +119,15 @@ paperpipe serve                # http://127.0.0.1:8000
 
 Browse and search the stored corpus, run a ranked full-text phrase search over extracted
 text, view a paper's abstract/headings/artifact status, and trigger `fetch` / `extract` /
-`index` / `export` / `reconcile` as background jobs with live log output. Each action
+`index` / `reconcile` as background jobs with live log output. Each action
 shells out to the same `paperpipe` CLI commands, so behaviour never drifts from the
 command line; `--data-dir`/`PAPERPIPE_DATA` apply the same way.
+
+**Export listed papers** downloads the papers matching the last search you ran (or the
+whole corpus when there is none) as `paper-export.<ext>`, in any `export` format: CSV,
+Markdown, BibLaTeX, Excel, BibTeX, CSL-JSON or RIS. It includes every match, not just the
+first 100 rows the table shows, and writes nothing on the server. The same file is
+available directly from `GET /api/export/download?format=<format>&q=<search>`.
 
 Data layout (git-ignored):
 
@@ -131,7 +137,7 @@ data/
 ├── index.json       # derived navigation guide - regenerable, never authoritative
 ├── pdfs/<id>.pdf
 ├── text/<id>.txt
-└── exports/papers.md, papers.csv, papers.bib, papers.csl.json, papers.ris
+└── exports/papers.{md,csv,xlsx,bib,biblatex.bib,csl.json,ris}
 ```
 
 Point it elsewhere with `--data-dir` or `PAPERPIPE_DATA`.
@@ -291,7 +297,12 @@ paper with title, authors, year, DOI, arXiv id and URL (plus the abstract):
 |---|---|---|
 | `csljson` | `papers.csl.json` | best fidelity in Zotero; arXiv-only papers import as preprints |
 | `bibtex` | `papers.bib` | `@misc` with `eprint`/`archiveprefix` for preprints, `@article` when a journal ref is known |
+| `biblatex` | `papers.biblatex.bib` | `@online` with `eprinttype = {arxiv}` for preprints, `@article` with `journaltitle`, ISO `date` |
 | `ris` | `papers.ris` | for tools that prefer RIS |
+
+`csv` and `xlsx` are flat tables, one row per paper. `arxiv_id` is the stored key (which
+may be `doi:...`); `year`, `doi`, `arxiv` (the real arXiv id, blank if none) and `url` are
+the normalised identifiers.
 
 Filenames are fixed and entries are sorted by citation key (`smith2024attention`), so
 re-exporting overwrites the same files with a stable diff. `--out DIR` writes them
