@@ -29,11 +29,11 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      # pdftotext, so the extraction and end-to-end tests run instead of skipping
+      # pdftotext and mutool, so the extraction, outline and end-to-end tests run instead of skipping
       - name: Install PDF tooling
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends poppler-utils
+          sudo apt-get install -y --no-install-recommends poppler-utils mupdf-tools
 
       - name: Install paperpipe
         run: |

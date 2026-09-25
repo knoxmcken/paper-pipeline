@@ -51,7 +51,7 @@ def build_markdown(conn, title: str = "Paper Index", category: bool = True) -> s
                 lines.append(f"- **Pages:** {paper.get('page_count')}")
             headings = paper.get("headings") or []
             if headings:
-                preview = "; ".join(headings[:8])
+                preview = "; ".join(h.strip() for h in headings[:8])
                 lines.append(f"- **Sections:** {preview}")
             abstract = paper.get("abstract")
             if abstract:
