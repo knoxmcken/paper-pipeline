@@ -18,6 +18,7 @@ from . import (
     config,
     crossref,
     db,
+    duplicates,
     export,
     extract,
     fetch,
@@ -516,6 +517,41 @@ def cmd_reconcile(args) -> int:
     return 0 if not args.fix or not report["unresolved"] else 1
 
 
+def cmd_duplicates(args) -> int:
+    conn, _ = _open(args)
+    if args.merge:
+        keep, drop = args.merge
+        run_id = db.start_run(conn, "merge", json.dumps({"keep": keep, "drop": drop}), _now())
+        try:
+            result = duplicates.merge(conn, keep, drop)
+        except ValueError as exc:
+            db.finish_run(conn, run_id, False, str(exc), _now())
+            print(f"merge refused: {exc}", file=sys.stderr)
+            conn.close()
+            return 2
+        db.finish_run(conn, run_id, True, json.dumps(result), _now())
+        print(f"merged {drop} into {keep}; filled: {', '.join(result['filled']) or 'nothing'}")
+        for path in result["orphaned_files"]:
+            print(f"  left on disk, no longer referenced: {path}")
+        print("run `paperpipe index` to refresh index.json")
+        conn.close()
+        return 0
+
+    papers = {p["arxiv_id"]: p for p in db.list_papers(conn)}
+    candidates = duplicates.find_duplicates(list(papers.values()))
+    for candidate in candidates:
+        a, b = papers[candidate["a"]], papers[candidate["b"]]
+        print(f"{candidate['a']}  <->  {candidate['b']}")
+        print(f"    {(a.get('published') or '')[:10]}  {str(a['title'])[:80]}")
+        print(f"    {(b.get('published') or '')[:10]}  {str(b['title'])[:80]}")
+        for item in candidate["evidence"]:
+            print(f"    - {item}")
+    print(f"\n{len(candidates)} candidate pair(s); nothing changed. "
+          "Merge one with: paperpipe duplicates --merge KEEP DROP")
+    conn.close()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="paperpipe", description="Research paper data pipeline")
     parser.add_argument("--version", action="version", version=f"paperpipe {__version__}")
@@ -634,6 +670,16 @@ def build_parser() -> argparse.ArgumentParser:
                              help="repair stale links and missing files (dry-run by default)")
     p_reconcile.add_argument("--delay", type=float, default=config.DEFAULT_DELAY)
     p_reconcile.set_defaults(func=cmd_reconcile, id=None)
+
+    p_duplicates = sub.add_parser(
+        "duplicates", parents=[common],
+        help="list papers stored twice (preprint vs published, arXiv id vs DOI)",
+    )
+    p_duplicates.add_argument(
+        "--merge", nargs=2, metavar=("KEEP", "DROP"),
+        help="fold DROP into KEEP (KEEP's values win, gaps filled from DROP) and delete DROP",
+    )
+    p_duplicates.set_defaults(func=cmd_duplicates, id=None)
     return parser
 
 
