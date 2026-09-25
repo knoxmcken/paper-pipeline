@@ -134,3 +134,40 @@ def test_frontend_served_at_root(client):
     resp = client.get("/")
     assert resp.status_code == 200
     assert "paper-pipeline" in resp.text
+
+
+EXPORT_EXTENSIONS = {
+    "csv": "csv", "md": "md", "biblatex": "bib", "xlsx": "xlsx",
+    "bibtex": "bib", "csljson": "json", "ris": "ris",
+}
+
+
+@pytest.mark.parametrize("fmt,ext", sorted(EXPORT_EXTENSIONS.items()))
+def test_export_download_is_an_attachment(client, fmt, ext):
+    resp = client.get("/api/export/download", params={"format": fmt})
+    assert resp.status_code == 200
+    assert resp.headers["content-disposition"] == f'attachment; filename="paper-export.{ext}"'
+    assert resp.headers["x-paper-count"] == "2"
+    assert resp.content
+
+
+def test_export_download_honours_the_search(client):
+    resp = client.get("/api/export/download", params={"format": "csv", "q": "prompt injection"})
+    lines = resp.text.strip().splitlines()
+    assert resp.headers["x-paper-count"] == "1"
+    assert len(lines) == 2 and "Alpha paper" in lines[1]
+
+
+def test_export_download_is_not_capped_like_the_list(client, tmp_path):
+    conn = db.connect(config.db_path(tmp_path))
+    db.upsert_papers(conn, [make_paper(arxiv_id=f"2402.{i:05d}", title=f"P{i}") for i in range(150)])
+    conn.close()
+    assert client.get("/api/papers").json()["count"] == 100
+    resp = client.get("/api/export/download", params={"format": "csv"})
+    assert resp.headers["x-paper-count"] == "152"
+
+
+def test_export_download_rejects_unknown_format(client):
+    resp = client.get("/api/export/download", params={"format": "docx"})
+    assert resp.status_code == 400
+    assert "one of" in resp.json()["detail"]

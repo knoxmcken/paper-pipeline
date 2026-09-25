@@ -119,10 +119,13 @@ def test_cli_export_writes_stable_files_to_out_dir(tmp_path):
     args = cli.build_parser().parse_args(argv)
     assert cli.cmd_export(args) == 0
     names = sorted(p.name for p in out.iterdir())
-    assert names == ["papers.bib", "papers.csl.json", "papers.csv", "papers.md", "papers.ris"]
-    first = {name: (out / name).read_text() for name in names}
+    assert names == [
+        "papers.bib", "papers.biblatex.bib", "papers.csl.json", "papers.csv",
+        "papers.md", "papers.ris", "papers.xlsx",
+    ]
+    first = {name: (out / name).read_bytes() for name in names}
     assert cli.cmd_export(cli.build_parser().parse_args(argv)) == 0
-    assert {name: (out / name).read_text() for name in names} == first
+    assert {name: (out / name).read_bytes() for name in names} == first
 
 
 def test_bibtex_keeps_an_organisation_with_and_as_one_author():
@@ -130,3 +133,18 @@ def test_bibtex_keeps_an_organisation_with_and_as_one_author():
     paper = make_paper(authors=["Research and Development Team", "Ada Lovelace"])
     entry = next(iter(pybtex.parse_string(bibliography.to_bibtex([paper]), "bibtex").entries.values()))
     assert len(entry.persons["author"]) == 2
+
+
+def test_biblatex_round_trips_through_a_parser():
+    pybtex = pytest.importorskip("pybtex.database")
+    parsed = pybtex.parse_string(bibliography.to_biblatex([ARXIV, JOURNAL]), "bibtex")
+    preprint = parsed.entries["lovelace2024attention"]
+    assert preprint.type == "online"
+    assert preprint.fields["date"] == "2024-01-15"
+    assert preprint.fields["eprint"] == "2401.00001"
+    assert preprint.fields["eprinttype"] == "arxiv"
+    assert preprint.fields["eprintclass"] == "cs.CL"
+    article = parsed.entries["hopper2023published"]
+    assert article.type == "article"
+    assert article.fields["journaltitle"] == "Journal of Tests"
+    assert article.fields["doi"] == "10.1000/xyz.1"

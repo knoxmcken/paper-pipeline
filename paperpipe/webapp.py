@@ -1,7 +1,9 @@
 """Local web UI: read the corpus directly, run pipeline stages as subprocess jobs.
 
 Reads (`stats`, `papers`, `runs`) hit the database directly via :mod:`paperpipe.db`.
-Actions (`fetch`, `extract`, `index`, `export`) shell out to ``python -m paperpipe``
+``/api/export/download`` renders the currently listed papers straight into the
+response as an attachment. Actions (`fetch`, `extract`, `index`, `export`) shell
+out to ``python -m paperpipe``
 so the UI can never drift from the CLI's tested behaviour, and so a long-running
 fetch doesn't block the API thread. Job state lives in memory - restarting the
 server drops job history, but never touches the database, which stays the source
@@ -18,11 +20,11 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import config, db
+from . import config, db, export
 
 STATIC_DIR = Path(__file__).parent / "web" / "static"
 
@@ -142,6 +144,33 @@ def create_app(data_dir: Path) -> FastAPI:
             return {"count": len(rows), "papers": rows}
         finally:
             conn.close()
+
+    @app.get("/api/export/download")
+    def download_export(format: str, q: Optional[str] = None):
+        """The papers matching ``q`` (the list's search box), or all of them, as a file.
+
+        Honours the search but not the list's display cap: every matching paper is
+        exported, not just the first page shown in the table.
+        """
+        spec = export.FORMATS.get(format)
+        if spec is None:
+            raise HTTPException(
+                status_code=400,
+                detail=f"unknown format {format!r}; one of {', '.join(export.FORMATS)}",
+            )
+        conn = _conn()
+        try:
+            papers = db.search(conn, q, limit=-1) if q else db.list_papers(conn)
+        finally:
+            conn.close()
+        return Response(
+            content=export.render(format, papers),
+            media_type=spec.media_type,
+            headers={
+                "Content-Disposition": f'attachment; filename="paper-export.{spec.extension}"',
+                "X-Paper-Count": str(len(papers)),
+            },
+        )
 
     @app.get("/api/search/fulltext")
     def get_fulltext(q: str, limit: int = 20):
