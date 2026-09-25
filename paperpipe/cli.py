@@ -354,7 +354,8 @@ def cmd_extract(args) -> int:
             db.update_extraction(conn, row["arxiv_id"], info, _now())
             db.index_fulltext(conn, row["arxiv_id"], info["text_path"])
             done += 1
-            print(f"  text {row['arxiv_id']}  {info['page_count']}p  {info['text_chars']:,} chars")
+            print(f"  text {row['arxiv_id']}  {info['page_count']}p  {info['text_chars']:,} chars"
+                  f"  headings={info['headings_method']}")
         except extract.ExtractError as exc:
             failed += 1
             print(f"  FAIL {row['arxiv_id']}: {exc}", file=sys.stderr)

@@ -27,6 +27,12 @@ pip install -e ".[dev]"
 Runtime needs `requests`; text extraction shells out to `pdftotext` (poppler-utils)
 and falls back to `mutool` (mupdf-tools). Nothing else.
 
+Section headings come from the PDF's own outline (`mutool show <pdf> outline`) when
+`mutool` is installed and the PDF has one, and are otherwise guessed from numbered
+lines in the extracted text. Each paper's `headings_method` (`outline` or `regex`)
+records which, so you know how far to trust them; nested outline entries are indented
+two spaces per level.
+
 ## Use
 
 ```bash
@@ -276,7 +282,6 @@ are absent.
 
 ## Roadmap
 
-- Full TOC from the PDF outline (`mutool show outline`) where one exists
 - Optional embeddings + duplicate detection
 
 ## License

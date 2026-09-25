@@ -147,12 +147,13 @@ async function showPaper(id) {
   const el = document.getElementById('detail');
   el.classList.add('open');
   const authors = (p.authors || []).join(', ');
-  const headings = (p.headings || []).slice(0, 12).join(' · ');
+  const headings = (p.headings || []).slice(0, 12).map(h => h.trim()).join(' · ');
+  const headingsNote = p.headings_method ? ` (from ${p.headings_method === 'outline' ? 'PDF outline' : 'text heuristics'})` : '';
   el.innerHTML = `
     <h3>${escapeHtml(p.title)}</h3>
     <div class="muted">${escapeHtml(authors)} — ${(p.published||'').slice(0,10)} — ${p.primary_category || ''}</div>
     <p>${escapeHtml(p.abstract || '')}</p>
-    <div class="muted">${headings}</div>
+    <div class="muted">${escapeHtml(headings)}${headings ? headingsNote : ''}</div>
     <div class="row">
       ${p.abs_url ? `<a href="${p.abs_url}" target="_blank">abstract</a>` : ''}
       ${p.pdf_path ? `<span class="muted">PDF stored (${p.pdf_bytes || 0} bytes)</span>` : '<span class="muted">no PDF</span>'}

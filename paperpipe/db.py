@@ -30,6 +30,7 @@ CREATE TABLE IF NOT EXISTS papers (
     text_chars       INTEGER,
     page_count       INTEGER,
     headings         TEXT,
+    headings_method  TEXT,
     source           TEXT,
     cited_by         INTEGER,
     fetched_at       TEXT,
@@ -96,7 +97,7 @@ ON CONFLICT(arxiv_id) DO UPDATE SET
 """
 
 # Columns added after the first release; merged into existing databases on open.
-MIGRATIONS = (("source", "TEXT"), ("cited_by", "INTEGER"))
+MIGRATIONS = (("source", "TEXT"), ("cited_by", "INTEGER"), ("headings_method", "TEXT"))
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -166,12 +167,13 @@ def update_extraction(conn: sqlite3.Connection, arxiv_id: str, info: Dict[str, o
                       extracted_at: str) -> None:
     conn.execute(
         """UPDATE papers SET text_path=?, text_chars=?, page_count=?, headings=?,
-           extracted_at=? WHERE arxiv_id=?""",
+           headings_method=?, extracted_at=? WHERE arxiv_id=?""",
         (
             info.get("text_path"),
             info.get("text_chars"),
             info.get("page_count"),
             json.dumps(info.get("headings") or []),
+            info.get("headings_method"),
             extracted_at,
             arxiv_id,
         ),
