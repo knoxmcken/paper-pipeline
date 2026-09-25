@@ -213,6 +213,65 @@ Notes:
   into the bucket (`gcloud storage cp -r data/* gs://<bucket>/`) before or after the
   first deploy, or just run `fetch`/`index` from the deployed UI.
 
+### Continuous deployment
+
+`.github/workflows/deploy.yml` redeploys `main` whenever CI passes on a push to it (and
+on demand from the Actions tab, from `main` only). It builds the image on the runner,
+pushes it to Artifact Registry tagged with the commit SHA, and points the existing
+Cloud Run service at it. **Only the image changes:** the `/data` volume, service
+account, `--max-instances=1` and private access all stay as `cloudrun-deploy.sh` set
+them, so run that script once first. If `main` has already moved on by the time a run
+starts, it skips and leaves the deploy to the newer commit's run. Runs use the
+`production` GitHub environment, where you can add required reviewers if you want a
+manual approval gate.
+
+Until the variables below are set, the workflow finishes with a "deploy skipped"
+notice instead of failing. Auth is keyless (Workload Identity Federation): GitHub's
+OIDC token is exchanged for short-lived credentials, so no service-account key is
+stored anywhere. One-time setup:
+
+```bash
+PROJECT_ID=personal-tools-isotopes55
+PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format='value(projectNumber)')
+REGION=us-central1
+RUNTIME_SA=paper-pipeline-deploy@$PROJECT_ID.iam.gserviceaccount.com   # the service's identity
+CI_SA=paper-pipeline-ci@$PROJECT_ID.iam.gserviceaccount.com            # what GitHub Actions acts as
+
+# 1. Trust GitHub's OIDC tokens, but only from this repo's main branch.
+gcloud iam workload-identity-pools create github --project=$PROJECT_ID --location=global
+gcloud iam workload-identity-pools providers create-oidc paper-pipeline \
+  --project=$PROJECT_ID --location=global --workload-identity-pool=github \
+  --issuer-uri=https://token.actions.githubusercontent.com \
+  --attribute-mapping=google.subject=assertion.sub,attribute.repository=assertion.repository,attribute.ref=assertion.ref \
+  --attribute-condition="assertion.repository=='knoxmcken/paper-pipeline' && assertion.ref=='refs/heads/main'"
+
+# 2. A deploy-only service account the workflow may impersonate.
+gcloud iam service-accounts create paper-pipeline-ci --project=$PROJECT_ID
+gcloud iam service-accounts add-iam-policy-binding $CI_SA --project=$PROJECT_ID \
+  --role=roles/iam.workloadIdentityUser \
+  --member="principalSet://iam.googleapis.com/projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/attribute.repository/knoxmcken/paper-pipeline"
+
+# 3. Least privilege: push images, update this one service, run it as the runtime SA.
+gcloud artifacts repositories add-iam-policy-binding paper-pipeline \
+  --project=$PROJECT_ID --location=$REGION \
+  --member=serviceAccount:$CI_SA --role=roles/artifactregistry.writer
+gcloud run services add-iam-policy-binding paper-pipeline \
+  --project=$PROJECT_ID --region=$REGION \
+  --member=serviceAccount:$CI_SA --role=roles/run.developer
+gcloud iam service-accounts add-iam-policy-binding $RUNTIME_SA --project=$PROJECT_ID \
+  --member=serviceAccount:$CI_SA --role=roles/iam.serviceAccountUser
+
+# 4. Point the workflow at it (repository variables, not secrets: none of these are secret).
+gh variable set GCP_PROJECT_ID --body $PROJECT_ID
+gh variable set GCP_REGION --body $REGION
+gh variable set GCP_DEPLOY_SERVICE_ACCOUNT --body $CI_SA
+gh variable set GCP_WORKLOAD_IDENTITY_PROVIDER \
+  --body projects/$PROJECT_NUMBER/locations/global/workloadIdentityPools/github/providers/paper-pipeline
+```
+
+Optional variables: `CLOUD_RUN_SERVICE` and `ARTIFACT_REGISTRY_REPO` (both default to
+`paper-pipeline`). Each successful run links the deployed revision in its job summary.
+
 ## Design notes
 
 - **The DB is the master.** `index.json` and the exports are derived and can be deleted
