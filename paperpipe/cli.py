@@ -14,6 +14,7 @@ import requests
 from . import (
     __version__,
     arxiv,
+    bibliography,
     config,
     crossref,
     db,
@@ -29,6 +30,14 @@ from . import (
 )
 
 STAGES = ("fetch", "download", "extract", "index", "export")
+
+# --format value -> (file written under the export dir, builder over the paper list)
+BIBLIOGRAPHY_FORMATS = {
+    "bibtex": ("papers.bib", bibliography.to_bibtex),
+    "csljson": ("papers.csl.json", bibliography.to_csljson),
+    "ris": ("papers.ris", bibliography.to_ris),
+}
+EXPORT_FORMATS = ["md", "csv", *BIBLIOGRAPHY_FORMATS, "all"]
 
 
 def _now() -> str:
@@ -379,14 +388,24 @@ def cmd_index(args) -> int:
 
 def cmd_export(args) -> int:
     conn, paths = _open(args)
+    out_dir = Path(getattr(args, "out", None) or paths["exports"])
     written = []
     if args.format in ("md", "all"):
         path = export.write_markdown(
-            conn, paths["exports"] / "papers.md", title=args.title, category=not args.flat
+            conn, out_dir / "papers.md", title=args.title, category=not args.flat
         )
         written.append(path)
     if args.format in ("csv", "all"):
-        written.append(export.build_csv(conn, paths["exports"] / "papers.csv"))
+        written.append(export.build_csv(conn, out_dir / "papers.csv"))
+    formats = [f for f in BIBLIOGRAPHY_FORMATS if args.format in (f, "all")]
+    if formats:
+        papers = db.list_papers(conn)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        for fmt in formats:
+            filename, build = BIBLIOGRAPHY_FORMATS[fmt]
+            path = out_dir / filename
+            path.write_text(build(papers), encoding="utf-8")
+            written.append(path)
     for path in written:
         print(f"wrote {path}")
     conn.close()
@@ -576,15 +595,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_index.add_argument("--check", action="store_true", help="verify index matches the DB")
     p_index.set_defaults(func=cmd_index, id=None)
 
-    p_export = sub.add_parser("export", parents=[common], help="write markdown/csv digests")
-    p_export.add_argument("--format", default="md", choices=["md", "csv", "all"])
+    p_export = sub.add_parser(
+        "export", parents=[common], help="write markdown/csv digests and BibTeX/CSL-JSON/RIS"
+    )
+    p_export.add_argument("--format", default="md", choices=EXPORT_FORMATS)
+    p_export.add_argument("--out", type=Path, help="output directory (default: <data-dir>/exports)")
     p_export.add_argument("--title", default="Paper Index")
     p_export.add_argument("--flat", action="store_true", help="skip category grouping")
     p_export.set_defaults(func=cmd_export, id=None)
 
     p_run = sub.add_parser("run", parents=[common], help="fetch -> extract -> index -> export")
     add_fetch_flags(p_run)
-    p_run.add_argument("--format", default="all", choices=["md", "csv", "all"])
+    p_run.add_argument("--format", default="all", choices=EXPORT_FORMATS)
     p_run.add_argument("--title", default="Paper Index")
     p_run.add_argument("--flat", action="store_true")
     p_run.set_defaults(func=cmd_run, id=None)

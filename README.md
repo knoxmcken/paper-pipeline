@@ -58,7 +58,8 @@ paperpipe search -q "graph neural networks" -n 10     # query only, stores nothi
 paperpipe fetch  -q "graph neural networks" -n 10     # metadata + PDFs into data/
 paperpipe extract                                       # everything missing text
 paperpipe index                                         # regenerate data/index.json
-paperpipe export --format all                           # data/exports/papers.{md,csv}
+paperpipe export --format all                           # data/exports/papers.{md,csv,bib,csl.json,ris}
+paperpipe export --format bibtex --out ~/refs           # one format, somewhere else
 
 # fill in PDFs for papers already stored in the DB (not just what the last search returned)
 paperpipe download                                      # every stored paper missing a PDF, using its stored url
@@ -119,7 +120,7 @@ data/
 ├── index.json       # derived navigation guide - regenerable, never authoritative
 ├── pdfs/<id>.pdf
 ├── text/<id>.txt
-└── exports/papers.md, papers.csv
+└── exports/papers.md, papers.csv, papers.bib, papers.csl.json, papers.ris
 ```
 
 Point it elsewhere with `--data-dir` or `PAPERPIPE_DATA`.
@@ -269,6 +270,27 @@ paperpipe export --format all
 # 5. sanity check the final shape
 paperpipe stats
 ```
+
+## Importing into Zotero
+
+`paperpipe export` writes reference-manager formats alongside the digests, one entry per
+paper with title, authors, year, DOI, arXiv id and URL (plus the abstract):
+
+| `--format` | file | notes |
+|---|---|---|
+| `csljson` | `papers.csl.json` | best fidelity in Zotero; arXiv-only papers import as preprints |
+| `bibtex` | `papers.bib` | `@misc` with `eprint`/`archiveprefix` for preprints, `@article` when a journal ref is known |
+| `ris` | `papers.ris` | for tools that prefer RIS |
+
+Filenames are fixed and entries are sorted by citation key (`smith2024attention`), so
+re-exporting overwrites the same files with a stable diff. `--out DIR` writes them
+somewhere other than `data/exports/`.
+
+In Zotero: select (or create) a collection, then **File → Import…**, choose the file,
+and tick "Place imports into new collection" if you want each export kept separate.
+Re-importing creates duplicates; Zotero's *Duplicate Items* view merges them. Papers
+stored under a DOI key (from OpenAlex/Crossref/Semantic Scholar) carry the DOI but no
+arXiv id.
 
 ## Tests
 
